@@ -1,7 +1,8 @@
 import fs from 'fs';
 import zlib from 'zlib';
 
-function createPNG(width, height, r, g, b, a = 255) {
+// scale: size of the reticle relative to the canvas; transparentBg: for adaptive-icon foregrounds.
+function createPNG(width, height, r, g, b, a = 255, { scale = 1, transparentBg = false } = {}) {
   // Signature
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -30,21 +31,23 @@ function createPNG(width, height, r, g, b, a = 255) {
       const cx = width / 2;
       const cy = height / 2;
       const dist = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
-      const radius = width * 0.35;
-      const innerRadius = width * 0.18;
+      const unit = Math.min(width, height) * scale;
+      const radius = unit * 0.35;
+      const innerRadius = unit * 0.18;
 
       let pr = r, pg = g, pb = b, pa = a;
 
       // Outer circle rim
-      if (Math.abs(dist - radius) < width * 0.02) {
+      if (Math.abs(dist - radius) < unit * 0.02) {
         pr = 34; pg = 211; pb = 238; // #22d3ee
-      } else if (Math.abs(dist - innerRadius) < width * 0.025) {
+      } else if (Math.abs(dist - innerRadius) < unit * 0.025) {
         pr = 52; pg = 211; pb = 153; // #34d399
       } else if (dist < innerRadius) {
         pr = 14; pg = 165; pb = 233; // #0ea5e9
       } else {
         // Deep HUD background #050811
         pr = 5; pg = 8; pb = 17;
+        if (transparentBg) pa = 0;
       }
 
       rawData[pxOffset] = pr;
@@ -97,5 +100,13 @@ fs.writeFileSync('public/pwa-512x512.png', createPNG(512, 512, 5, 8, 17));
 fs.writeFileSync('public/pwa-maskable-512x512.png', createPNG(512, 512, 5, 8, 17));
 fs.writeFileSync('public/apple-touch-icon.png', createPNG(180, 180, 5, 8, 17));
 fs.writeFileSync('public/favicon.ico', createPNG(32, 32, 5, 8, 17));
+
+// Source images for `npx @capacitor/assets generate --android` (Android launcher icons + splash).
+fs.mkdirSync('assets', { recursive: true });
+fs.writeFileSync('assets/icon-only.png', createPNG(1024, 1024, 5, 8, 17));
+fs.writeFileSync('assets/icon-foreground.png', createPNG(1024, 1024, 5, 8, 17, 255, { scale: 0.8, transparentBg: true }));
+fs.writeFileSync('assets/icon-background.png', createPNG(1024, 1024, 5, 8, 17, 255, { scale: 0 }));
+fs.writeFileSync('assets/splash.png', createPNG(2732, 2732, 5, 8, 17, 255, { scale: 0.25 }));
+fs.writeFileSync('assets/splash-dark.png', createPNG(2732, 2732, 5, 8, 17, 255, { scale: 0.25 }));
 
 console.log('PNG icon assets created successfully!');

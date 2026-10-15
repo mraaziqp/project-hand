@@ -1,143 +1,34 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Flame, Activity, Volume2, VolumeX, Play, Square, RotateCcw, Sparkles, CheckCircle2 } from 'lucide-react';
-import { playTacticalAudio, speakJarvis } from '../utils/audio';
-
-export type SolderCoachSubMode = 'THREE_SEC_RULE' | 'WALK_AND_ROCK';
+import React from 'react';
+import { Flame, Activity, Volume2, VolumeX, Play, Square, RotateCcw } from 'lucide-react';
+import { playTacticalAudio } from '../utils/audio';
+import { SolderCoach } from '../hooks/useSolderCoach';
 
 interface SolderCoachOverlayProps {
+  coach: SolderCoach;
   isActiveMode: boolean;
   isFloatingOverlay?: boolean;
 }
 
 export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
+  coach,
   isActiveMode,
   isFloatingOverlay = false,
 }) => {
-  const [subMode, setSubMode] = useState<SolderCoachSubMode>('THREE_SEC_RULE');
-
-  // 3-Second Soldering Rule Pacer state
-  // 0 = Idle, 1 = Heat (1s), 2 = Feed Solder (2s), 3 = Freeze (3s), 4 = Done / Complete
-  const [solderStep, setSolderStep] = useState<0 | 1 | 2 | 3 | 4>(0);
-  const [isPacingActive, setIsPacingActive] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(true);
-
-  // Walk & Rock Desolder Metronome state
-  const [isMetronomeActive, setIsMetronomeActive] = useState(false);
-  const [rockingSide, setRockingSide] = useState<'LEFT' | 'RIGHT'>('LEFT');
-  const [rockingSecondsRemaining, setRockingSecondsRemaining] = useState(3);
-  const [totalCyclesDone, setTotalCyclesDone] = useState(0);
-
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const metronomeIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Trigger 3-Second Rule Countdown Pacer
-  const trigger3SecondRule = useCallback(() => {
-    if (isPacingActive) return;
-    setIsPacingActive(true);
-    setSolderStep(1);
-
-    // Second 1: 1s (Heat)
-    if (soundEnabled) playTacticalAudio.solderSecond1();
-
-    // Second 2: 2s (Feed Solder)
-    const t1 = setTimeout(() => {
-      setSolderStep(2);
-      if (soundEnabled) playTacticalAudio.solderSecond2();
-    }, 1000);
-
-    // Second 3: 3s (Freeze)
-    const t2 = setTimeout(() => {
-      setSolderStep(3);
-      if (soundEnabled) playTacticalAudio.solderSecond3();
-    }, 2000);
-
-    // Second 4: Completion & Success Meniscus
-    const t3 = setTimeout(() => {
-      setSolderStep(4);
-      if (soundEnabled) playTacticalAudio.solderPullFreeze();
-    }, 3000);
-
-    // Reset to idle
-    const t4 = setTimeout(() => {
-      setSolderStep(0);
-      setIsPacingActive(false);
-    }, 4500);
-
-    timerRef.current = t4;
-  }, [isPacingActive, soundEnabled]);
-
-  // Spacebar hotkey to trigger 3-second rule while hands are holding iron
-  useEffect(() => {
-    if (!isActiveMode) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT') {
-        e.preventDefault();
-        if (subMode === 'THREE_SEC_RULE') {
-          trigger3SecondRule();
-        } else {
-          setIsMetronomeActive(prev => !prev);
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isActiveMode, subMode, trigger3SecondRule]);
-
-  // Walk & Rock Desolder Metronome: 3s Left Pin -> 3s Right Pin loop
-  useEffect(() => {
-    if (!isMetronomeActive) {
-      if (metronomeIntervalRef.current) clearInterval(metronomeIntervalRef.current);
-      setRockingSecondsRemaining(3);
-      return;
-    }
-
-    if (soundEnabled) {
-      playTacticalAudio.metronomeLeft();
-    }
-
-    metronomeIntervalRef.current = setInterval(() => {
-      setRockingSecondsRemaining(prev => {
-        if (prev <= 1) {
-          // Switch pin side
-          setRockingSide(current => {
-            const nextSide = current === 'LEFT' ? 'RIGHT' : 'LEFT';
-            if (soundEnabled) {
-              if (nextSide === 'LEFT') {
-                playTacticalAudio.metronomeLeft();
-              } else {
-                playTacticalAudio.metronomeRight();
-              }
-            }
-            if (nextSide === 'LEFT') {
-              setTotalCyclesDone(c => c + 1);
-            }
-            return nextSide;
-          });
-          return 3;
-        } else {
-          // Subtle countdown tick each second
-          if (soundEnabled) {
-            playTacticalAudio.countdownTick();
-          }
-          return prev - 1;
-        }
-      });
-    }, 1000);
-
-    return () => {
-      if (metronomeIntervalRef.current) clearInterval(metronomeIntervalRef.current);
-    };
-  }, [isMetronomeActive, soundEnabled]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      if (metronomeIntervalRef.current) clearInterval(metronomeIntervalRef.current);
-    };
-  }, []);
+  const {
+    subMode,
+    setSubMode,
+    solderStep,
+    isPacingActive,
+    trigger3SecondRule,
+    soundEnabled,
+    setSoundEnabled,
+    isMetronomeActive,
+    setMetronomeActive,
+    rockingSide,
+    rockingSecondsRemaining,
+    totalCyclesDone,
+    resetCycles,
+  } = coach;
 
   if (!isActiveMode) return null;
 
@@ -149,7 +40,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
       <div className="absolute inset-0 z-30 pointer-events-none flex flex-col items-center justify-center p-4">
         {/* Active 3-Second Soldering Rule Live Reticle */}
         {solderStep > 0 && (
-          <div className="flex flex-col items-center justify-center animate-in fade-in zoom-in duration-200">
+          <div className="flex flex-col items-center justify-center">
             {/* Massive Glowing Countdown Ring */}
             <div
               className={`w-36 h-36 sm:w-44 sm:h-44 rounded-full border-4 flex flex-col items-center justify-center backdrop-blur-md transition-all duration-300 shadow-2xl ${
@@ -198,13 +89,13 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
 
         {/* Walk & Rock Floating Metronome Pacing Indicator */}
         {isMetronomeActive && solderStep === 0 && (
-          <div className="absolute top-16 left-1/2 -translate-x-1/2 px-5 py-3 rounded-2xl bg-[#050811]/90 border-2 border-amber-400 shadow-[0_0_35px_rgba(251,191,36,0.5)] flex items-center gap-4 text-slate-100">
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 w-max max-w-[calc(100%-1rem)] px-4 py-3 rounded-2xl bg-[#050811]/90 border-2 border-amber-400 shadow-[0_0_35px_rgba(251,191,36,0.5)] flex items-center gap-4 text-slate-100">
             <Activity className="w-6 h-6 text-amber-400 animate-pulse" />
             <div className="text-center font-mono">
               <div className="text-xs text-amber-300 font-bold uppercase tracking-wider">
                 WALK-AND-ROCK DESOLDER METRONOME
               </div>
-              <div className="text-lg font-black text-white flex items-center justify-center gap-2 mt-0.5">
+              <div className="text-sm sm:text-lg font-black text-white flex items-center justify-center gap-2 mt-0.5">
                 <span className={rockingSide === 'LEFT' ? 'text-amber-400 font-black scale-110' : 'text-slate-500'}>
                   ← TILT PIN A
                 </span>
@@ -227,7 +118,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
     <div className="w-full flex flex-col gap-3 p-3.5 rounded-2xl bg-[#090e1f]/95 border border-emerald-500/40 shadow-[0_0_25px_rgba(52,211,153,0.15)] text-slate-100 backdrop-blur-md">
       {/* Submode Tabs: 3-Second Rule vs Walk & Rock */}
       <div className="flex items-center justify-between gap-2 border-b border-emerald-950/70 pb-2.5">
-        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono">
+        <div className="flex flex-wrap items-center gap-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono">
           <button
             onClick={() => {
               setSubMode('THREE_SEC_RULE');
@@ -240,7 +131,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
             }`}
           >
             <Flame className="w-3.5 h-3.5 fill-current" />
-            <span>3-SECOND RULE (SOLDER)</span>
+            <span>3-SEC RULE</span>
           </button>
 
           <button
@@ -255,7 +146,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
             }`}
           >
             <Activity className="w-3.5 h-3.5" />
-            <span>WALK & ROCK (DESOLDER)</span>
+            <span>WALK & ROCK</span>
           </button>
         </div>
 
@@ -341,7 +232,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
                   : solderStep === 3
                   ? 'STEP 3: FREEZING JOINT (HOLD STILL)...'
                   : 'PERFECT MENISCUS ACHIEVED!'
-                : 'START 3-SECOND RULE (SPACEBAR OR TAP)'}
+                : 'START 3-SECOND RULE'}
             </span>
           </button>
         </div>
@@ -356,7 +247,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
 
           {/* Visual Rocking Tilt Meter */}
           <div className="p-3.5 rounded-xl bg-[#050811] border border-amber-950/70 flex flex-col items-center justify-center gap-2">
-            <div className="w-full flex items-center justify-between text-xs font-mono px-2">
+            <div className="w-full flex items-center justify-between gap-2 text-[10px] sm:text-xs font-mono px-1">
               <span
                 className={`flex items-center gap-1 font-bold ${
                   rockingSide === 'LEFT' && isMetronomeActive
@@ -364,7 +255,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
                     : 'text-slate-500'
                 }`}
               >
-                ← HEAT PIN A (TILT LEFT)
+                ← HEAT PIN A
               </span>
               <span className="text-[11px] text-slate-400 tabular-nums">
                 CYCLE #{totalCyclesDone}
@@ -376,7 +267,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
                     : 'text-slate-500'
                 }`}
               >
-                HEAT PIN B (TILT RIGHT) →
+                HEAT PIN B →
               </span>
             </div>
 
@@ -401,7 +292,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
-                setIsMetronomeActive(!isMetronomeActive);
+                setMetronomeActive(!isMetronomeActive);
                 playTacticalAudio.chirp();
               }}
               className={`flex-1 py-3 px-4 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-[0.98] ${
@@ -417,7 +308,7 @@ export const SolderCoachOverlay: React.FC<SolderCoachOverlayProps> = ({
             {isMetronomeActive && (
               <button
                 onClick={() => {
-                  setTotalCyclesDone(0);
+                  resetCycles();
                   playTacticalAudio.chirp();
                 }}
                 className="px-3 py-3 rounded-xl bg-slate-900 text-slate-400 hover:text-white border border-slate-800 text-xs font-mono"

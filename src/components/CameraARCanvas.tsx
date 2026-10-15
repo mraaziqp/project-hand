@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, MutableRefObject } from 'react';
 import {
   Camera,
   RefreshCw,
@@ -9,35 +9,80 @@ import {
   AlertTriangle,
   Layers,
   Crosshair,
-  Upload,
+  ImageUp,
   Radio,
-  Eye,
   Sliders,
+  Video,
+  X,
+  Aperture,
 } from 'lucide-react';
-import { CameraSourceType, DetectionItem, SampleBoard } from '../types';
-import { SAMPLE_BOARDS } from '../utils/sampleBoards';
+import { Currency, DetectionItem, OperatingMode, SampleBoard, StillFrame } from '../types';
+import { SAMPLE_BOARDS, renderSampleBoard } from '../utils/sampleBoards';
 import { playTacticalAudio } from '../utils/audio';
+import { captureVideoFrame, fileToScaledImage, LoadedImage } from '../utils/image';
+import { formatPrice } from '../utils/shopping';
 import { SolderCoachOverlay } from './SolderCoachOverlay';
+import { SolderCoach } from '../hooks/useSolderCoach';
+
+type SourceType = 'LIVE' | 'DEMO';
 
 interface CameraARCanvasProps {
   detections: DetectionItem[];
   selectedDetection: DetectionItem | null;
   onSelectDetection: (item: DetectionItem | null) => void;
-  onCaptureFrame: (base64Image: string) => void;
+  still: StillFrame | null;
+  onStillChange: (still: StillFrame | null) => void;
+  /** Analyze an image. `freeze` = show it as the still frame while analyzing. */
+  onScanImage: (image: LoadedImage, freeze: boolean) => void;
+  onLoadDemoBoard: (board: SampleBoard) => void;
   onClearDetections: () => void;
   isAnalyzing: boolean;
-  activeMode: string;
+  activeMode: OperatingMode;
   onLogHarvestedPart: (item: DetectionItem) => void;
   isAutoWatchActive: boolean;
   onToggleAutoWatch: () => void;
   autoWatchSecondsLeft: number;
+  coach: SolderCoach;
+  currency: Currency;
+  /** Lets App grab a fresh live frame (auto-watch, voice "scan"). */
+  liveCaptureRef: MutableRefObject<(() => LoadedImage | null) | null>;
+  torchToggleRef: MutableRefObject<(() => void) | null>;
 }
+
+interface MediaRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Where the media actually lands inside the container for object-fit contain/cover.
+function fitRect(mediaW: number, mediaH: number, boxW: number, boxH: number, mode: 'contain' | 'cover'): MediaRect {
+  if (!mediaW || !mediaH) return { x: 0, y: 0, w: boxW, h: boxH };
+  const scale = mode === 'contain' ? Math.min(boxW / mediaW, boxH / mediaH) : Math.max(boxW / mediaW, boxH / mediaH);
+  const w = mediaW * scale;
+  const h = mediaH * scale;
+  return { x: (boxW - w) / 2, y: (boxH - h) / 2, w, h };
+}
+
+const TYPE_COLORS: Record<string, string> = {
+  HAZARD: '#f43f5e',
+  THROUGH_HOLE: '#34d399',
+  SMD: '#fbbf24',
+  CONNECTOR: '#fbbf24',
+  IC_CHIP: '#22d3ee',
+  MODULE: '#a78bfa',
+  MECHANICAL: '#f97316',
+};
 
 export const CameraARCanvas: React.FC<CameraARCanvasProps> = ({
   detections,
   selectedDetection,
   onSelectDetection,
-  onCaptureFrame,
+  still,
+  onStillChange,
+  onScanImage,
+  onLoadDemoBoard,
   onClearDetections,
   isAnalyzing,
   activeMode,
@@ -45,508 +90,387 @@ export const CameraARCanvas: React.FC<CameraARCanvasProps> = ({
   isAutoWatchActive,
   onToggleAutoWatch,
   autoWatchSecondsLeft,
+  coach,
+  currency,
+  liveCaptureRef,
+  torchToggleRef,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const captureInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  const [sourceType, setSourceType] = useState<CameraSourceType>('REAR_CAM');
-  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [source, setSource] = useState<SourceType>('LIVE');
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [showDevicePicker, setShowDevicePicker] = useState(false);
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isVideoReady, setIsVideoReady] = useState(false);
+  const [videoSize, setVideoSize] = useState({ w: 0, h: 0 });
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [demoBoardId, setDemoBoardId] = useState(SAMPLE_BOARDS[0].id);
 
-  // Device Enumeration & Multi-Camera Switcher
-  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
-  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [showDevicePicker, setShowDevicePicker] = useState(false);
+  const showingStill = !!still;
 
-  // Sample Boards & Uploaded Image
-  const [uploadedImageSrc, setUploadedImageSrc] = useState<string | null>(null);
-  const [selectedSampleBoard, setSelectedSampleBoard] = useState<SampleBoard | null>(SAMPLE_BOARDS[0]);
+  const stopStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setIsVideoReady(false);
+    setTorchAvailable(false);
+    setIsTorchOn(false);
+  }, []);
 
-  // Enumerate video devices
   const refreshDevices = useCallback(async () => {
     try {
-      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoInputs = devices.filter(d => d.kind === 'videoinput');
-        setVideoDevices(videoInputs);
-        if (videoInputs.length > 0 && !selectedDeviceId) {
-          setSelectedDeviceId(videoInputs[0].deviceId);
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to enumerate devices:', e);
+      const devices = await navigator.mediaDevices?.enumerateDevices?.();
+      if (devices) setVideoDevices(devices.filter(d => d.kind === 'videoinput'));
+    } catch {
+      // ignore
     }
-  }, [selectedDeviceId]);
+  }, []);
 
+  // Camera lifecycle: one effect owns starting/stopping the stream.
+  const [restartToken, setRestartToken] = useState(0);
   useEffect(() => {
-    refreshDevices();
-  }, [refreshDevices]);
+    if (source !== 'LIVE') {
+      stopStream();
+      return;
+    }
 
-  // Start hardware camera stream
-  const startCamera = useCallback(
-    async (deviceId?: string, facing: 'environment' | 'user' = 'environment') => {
-      setCameraError(null);
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-      }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError(
+        window.isSecureContext
+          ? 'This browser does not support live camera access. Use the PHOTO button to snap a picture instead.'
+          : 'Live camera needs HTTPS. Open the app over https:// (see README), or tap PHOTO below to use your phone camera directly.'
+      );
+      return;
+    }
 
-      // CRITICAL ZERO-MOCK AUDIT RULE:
-      // When live camera is active, immediately purge any mock bounding boxes!
-      onClearDetections();
+    let cancelled = false;
+    setCameraError(null);
+    stopStream();
 
-      try {
-        const constraints: MediaStreamConstraints = {
-          audio: false,
-          video: deviceId
-            ? { deviceId: { exact: deviceId } }
-            : {
-                facingMode: { ideal: facing },
-                width: { ideal: 1920, min: 1280 },
-                height: { ideal: 1080, min: 720 },
-              },
-        };
+    const video: MediaTrackConstraints = selectedDeviceId
+      ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+      : { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } };
 
-        const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-        setStream(newStream);
-
+    navigator.mediaDevices
+      .getUserMedia({ audio: false, video })
+      .then(stream => {
+        if (cancelled) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        streamRef.current = stream;
+        const track = stream.getVideoTracks()[0];
+        track.addEventListener('ended', () => {
+          if (streamRef.current === stream) setRestartToken(t => t + 1);
+        });
+        const caps: any = track.getCapabilities?.() ?? {};
+        setTorchAvailable(!!caps.torch);
         if (videoRef.current) {
-          videoRef.current.srcObject = newStream;
+          videoRef.current.srcObject = stream;
           videoRef.current.play().catch(() => {});
         }
-
-        // Check for torch capability
-        const track = newStream.getVideoTracks()[0];
-        const capabilities: any = track.getCapabilities ? track.getCapabilities() : {};
-        setTorchAvailable(!!capabilities.torch);
-        setIsTorchOn(false);
-
-        await refreshDevices();
-      } catch (err: any) {
+        refreshDevices();
+      })
+      .catch((err: DOMException) => {
+        if (cancelled) return;
         console.warn('Camera access issue:', err);
-        setCameraError(err.message || 'Unable to access hardware camera. Check permissions or select a sample board.');
-        setSourceType('SAMPLE_PHOTO');
-      }
-    },
-    [stream, onClearDetections, refreshDevices]
-  );
-
-  // Handle source changes
-  useEffect(() => {
-    if (sourceType === 'REAR_CAM') {
-      setFacingMode('environment');
-      startCamera(selectedDeviceId || undefined, 'environment');
-    } else if (sourceType === 'FRONT_CAM') {
-      setFacingMode('user');
-      startCamera(selectedDeviceId || undefined, 'user');
-    } else {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        setStream(null);
-      }
-    }
+        const msg =
+          err.name === 'NotAllowedError'
+            ? 'Camera permission was denied. Allow camera access in your browser settings, or use PHOTO / GALLERY below.'
+            : err.name === 'NotFoundError' || err.name === 'OverconstrainedError'
+            ? 'No matching camera found. Try FLIP, pick another camera, or use PHOTO / GALLERY.'
+            : err.message || 'Unable to start the camera. Use PHOTO / GALLERY below instead.';
+        setCameraError(msg);
+      });
 
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-      }
+      cancelled = true;
     };
-  }, [sourceType, selectedDeviceId]);
+  }, [source, facingMode, selectedDeviceId, restartToken, stopStream, refreshDevices]);
 
-  // Flip camera between Rear (Environment) and Front (User)
-  const flipCamera = () => {
-    playTacticalAudio.chirp();
-    const nextFacing = facingMode === 'environment' ? 'user' : 'environment';
-    setFacingMode(nextFacing);
-    setSourceType(nextFacing === 'environment' ? 'REAR_CAM' : 'FRONT_CAM');
-    setSelectedDeviceId(''); // let constraints pick best for facing mode
-    startCamera(undefined, nextFacing);
-  };
+  useEffect(() => stopStream, [stopStream]);
 
-  // Torch toggle
-  const toggleTorch = async () => {
-    if (!stream) return;
-    const track = stream.getVideoTracks()[0];
-    if (!track) return;
-
-    try {
-      const nextState = !isTorchOn;
-      await track.applyConstraints({
-        advanced: [{ torch: nextState } as any],
-      });
-      setIsTorchOn(nextState);
-      playTacticalAudio.chirp();
-    } catch (err) {
-      console.warn('Torch toggle failed:', err);
-    }
-  };
-
-  // Render Synthetic Sample Boards on Canvas when in TEST BOARDS mode
+  // Mobile browsers kill the camera when the app is backgrounded; restart on return.
   useEffect(() => {
-    if (sourceType !== 'SAMPLE_PHOTO' || !selectedSampleBoard) return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || source !== 'LIVE') return;
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (!track || track.readyState === 'ended') setRestartToken(t => t + 1);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [source]);
+
+  // Track container size for the overlay canvas.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      const r = entries[0].contentRect;
+      setContainerSize({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const getMediaRect = useCallback((): MediaRect => {
+    const { w, h } = containerSize;
+    if (still) return fitRect(still.width, still.height, w, h, 'contain');
+    return fitRect(videoSize.w, videoSize.h, w, h, 'cover');
+  }, [containerSize, still, videoSize]);
+
+  // Draw the AR overlay whenever inputs change (no busy animation loop).
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const { w: cw, h: ch } = containerSize;
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
 
-    canvas.width = 1000;
-    canvas.height = 750;
-
-    // Dark solder-mask green
-    ctx.fillStyle = '#0a2318';
-    ctx.fillRect(0, 0, 1000, 750);
-
-    // Copper ground plane hatching
-    ctx.strokeStyle = '#123d2b';
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 1000; i += 24) {
-      ctx.beginPath();
-      ctx.moveTo(i, 0);
-      ctx.lineTo(i, 750);
-      ctx.stroke();
-    }
-    for (let j = 0; j < 750; j += 24) {
-      ctx.beginPath();
-      ctx.moveTo(0, j);
-      ctx.lineTo(1000, j);
-      ctx.stroke();
-    }
-
-    // Gold / Copper traces
-    ctx.strokeStyle = '#b8860b';
-    ctx.lineWidth = 4;
-    ctx.lineCap = 'round';
+    // Center reticle
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.25)';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(120, 150);
-    ctx.lineTo(350, 150);
-    ctx.lineTo(350, 300);
-    ctx.lineTo(600, 300);
-    ctx.lineTo(750, 480);
+    ctx.moveTo(cw / 2 - 20, ch / 2);
+    ctx.lineTo(cw / 2 + 20, ch / 2);
+    ctx.moveTo(cw / 2, ch / 2 - 20);
+    ctx.lineTo(cw / 2, ch / 2 + 20);
     ctx.stroke();
 
+    // Boxes only make sense on the image they were computed from: the still frame,
+    // or live video during auto-watch.
+    if (!still && !isAutoWatchActive) return;
+
+    const rect = getMediaRect();
+    ctx.save();
     ctx.beginPath();
-    ctx.moveTo(150, 450);
-    ctx.lineTo(300, 450);
-    ctx.lineTo(400, 600);
-    ctx.stroke();
+    ctx.rect(0, 0, cw, ch);
+    ctx.clip();
 
-    // Silkscreen markings & title
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 20px "JetBrains Mono", monospace';
-    ctx.fillText(selectedSampleBoard.title.toUpperCase(), 40, 50);
-    ctx.font = '14px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#22d3ee';
-    ctx.fillText(`BENCH-OS CALIBRATION BOARD // ${selectedSampleBoard.difficulty}`, 40, 76);
-
-    // Silkscreen pin notes
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.font = '12px "JetBrains Mono", monospace';
-    ctx.fillText('VCC_IN: 5.0V', 40, 120);
-    ctx.fillText('GND_RAIL', 40, 140);
-
-    // Draw visual component shapes
-    selectedSampleBoard.mockAnalysis.detections.forEach(det => {
+    detections.forEach((det, index) => {
       const [ymin, xmin, ymax, xmax] = det.box_2d;
-      const x = (xmin / 1000) * 1000;
-      const y = (ymin / 1000) * 750;
-      const w = ((xmax - xmin) / 1000) * 1000;
-      const h = ((ymax - ymin) / 1000) * 750;
+      const x = rect.x + (xmin / 1000) * rect.w;
+      const y = rect.y + (ymin / 1000) * rect.h;
+      const w = ((xmax - xmin) / 1000) * rect.w;
+      const h = ((ymax - ymin) / 1000) * rect.h;
+      const isSelected = selectedDetection === det;
+      const color = TYPE_COLORS[det.type] ?? '#22d3ee';
 
-      if (det.type === 'HAZARD') {
-        ctx.fillStyle = 'rgba(244, 63, 94, 0.25)';
-        ctx.strokeStyle = '#f43f5e';
-        ctx.lineWidth = 3;
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeRect(x, y, w, h);
-        ctx.fillStyle = '#f43f5e';
-        ctx.font = 'bold 16px "JetBrains Mono", monospace';
-        ctx.fillText('⚠ LITHIUM HAZARD', x + 10, y + 26);
-      } else if (det.label.includes('Capacitor')) {
-        ctx.fillStyle = '#1e293b';
-        ctx.beginPath();
-        ctx.ellipse(x + w / 2, y + h / 2, w / 2.2, h / 2.2, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#22d3ee';
-        ctx.lineWidth = 3;
-        ctx.stroke();
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = isSelected ? 3 : 2;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = isSelected ? 10 : 3;
 
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(x + w * 0.15, y + h * 0.2, w * 0.15, h * 0.6);
-        ctx.fillStyle = '#050811';
-        ctx.font = 'bold 14px "JetBrains Mono", monospace';
-        ctx.fillText('-', x + w * 0.18, y + h * 0.55);
-      } else if (det.label.includes('Regulator') || det.type === 'SMD') {
-        ctx.fillStyle = '#0f172a';
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = '#fbbf24';
-        ctx.lineWidth = 2.5;
-        ctx.strokeRect(x, y, w, h);
-        ctx.fillStyle = '#cbd5e1';
-        ctx.fillRect(x + w * 0.2, y - 6, w * 0.6, 6);
-      } else if (det.label.includes('Button') || det.label.includes('Switch')) {
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = '#34d399';
-        ctx.lineWidth = 2.5;
-        ctx.strokeRect(x, y, w, h);
-        ctx.fillStyle = '#0ea5e9';
-        ctx.beginPath();
-        ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) * 0.25, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        ctx.fillStyle = '#334155';
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = '#34d399';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, w, h);
-      }
-    });
-  }, [sourceType, selectedSampleBoard]);
-
-  // Continuous AR Canvas Drawing Loop
-  useEffect(() => {
-    let animId: number;
-
-    const renderAROverlay = () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      const container = containerRef.current;
-      if (!container) return;
-
-      const width = container.clientWidth;
-      const height = container.clientHeight;
-
-      if (sourceType !== 'SAMPLE_PHOTO') {
-        if (canvas.width !== width || canvas.height !== height) {
-          canvas.width = width;
-          canvas.height = height;
-        }
-        ctx.clearRect(0, 0, width, height);
-      }
-
-      const scaleX = canvas.width;
-      const scaleY = canvas.height;
-
-      // Draw subtle crosshair reticle in center
-      const centerX = width / 2;
-      const centerY = height / 2;
-      ctx.strokeStyle = 'rgba(34, 211, 238, 0.2)';
-      ctx.lineWidth = 1;
+      const c = Math.max(4, Math.min(16, w * 0.3, h * 0.3));
       ctx.beginPath();
-      ctx.moveTo(centerX - 24, centerY);
-      ctx.lineTo(centerX + 24, centerY);
-      ctx.moveTo(centerX, centerY - 24);
-      ctx.lineTo(centerX, centerY + 24);
+      ctx.moveTo(x, y + c);
+      ctx.lineTo(x, y);
+      ctx.lineTo(x + c, y);
+      ctx.moveTo(x + w - c, y);
+      ctx.lineTo(x + w, y);
+      ctx.lineTo(x + w, y + c);
+      ctx.moveTo(x, y + h - c);
+      ctx.lineTo(x, y + h);
+      ctx.lineTo(x + c, y + h);
+      ctx.moveTo(x + w - c, y + h);
+      ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x + w, y + h - c);
       ctx.stroke();
 
-      // Draw detected components
-      detections.forEach((det, index) => {
-        const [ymin, xmin, ymax, xmax] = det.box_2d;
-        const x = (xmin / 1000) * scaleX;
-        const y = (ymin / 1000) * scaleY;
-        const w = ((xmax - xmin) / 1000) * scaleX;
-        const h = ((ymax - ymin) / 1000) * scaleY;
-
-        const isSelected = selectedDetection?.label === det.label;
-        const isHazard = det.type === 'HAZARD';
-        const isJointCoach = activeMode === 'SOLDER_COACH';
-
-        let color = '#22d3ee';
-        if (isHazard) color = '#f43f5e';
-        else if (det.type === 'THROUGH_HOLE' || (isJointCoach && det.label.includes('Good'))) color = '#34d399';
-        else if (det.type === 'SMD' || det.type === 'CONNECTOR') color = '#fbbf24';
-
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = isSelected ? 3 : 2;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = isSelected ? 12 : 4;
-
-        const cornerSize = Math.min(16, w * 0.3, h * 0.3);
-        ctx.beginPath();
-        ctx.moveTo(x, y + cornerSize);
-        ctx.lineTo(x, y);
-        ctx.lineTo(x + cornerSize, y);
-        ctx.moveTo(x + w - cornerSize, y);
-        ctx.lineTo(x + w, y);
-        ctx.lineTo(x + w, y + cornerSize);
-        ctx.moveTo(x, y + h - cornerSize);
-        ctx.lineTo(x, y + h);
-        ctx.lineTo(x + cornerSize, y + h);
-        ctx.moveTo(x + w - cornerSize, y + h);
-        ctx.lineTo(x + w, y + h);
-        ctx.lineTo(x + w, y + h - cornerSize);
-        ctx.stroke();
-
-        if (isSelected || isHazard) {
-          ctx.fillStyle = isHazard ? 'rgba(244, 63, 94, 0.12)' : 'rgba(34, 211, 238, 0.1)';
-          ctx.fillRect(x, y, w, h);
-        }
-
+      if (isSelected || det.type === 'HAZARD') {
         ctx.shadowBlur = 0;
-        ctx.fillStyle = 'rgba(5, 8, 17, 0.9)';
-        const tagText = `${index + 1}. ${det.label}`;
-        ctx.font = 'bold 11px "JetBrains Mono", monospace';
-        const textWidth = ctx.measureText(tagText).width;
-        const tagHeight = 22;
+        ctx.fillStyle = det.type === 'HAZARD' ? 'rgba(244, 63, 94, 0.15)' : 'rgba(34, 211, 238, 0.15)';
+        ctx.fillRect(x, y, w, h);
+      }
 
-        const tagY = Math.max(0, y - tagHeight - 2);
-        ctx.fillRect(x, tagY, textWidth + 14, tagHeight);
-
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x, tagY, textWidth + 14, tagHeight);
-
-        ctx.fillStyle = color;
-        ctx.fillText(tagText, x + 6, tagY + 15);
-
-        ctx.restore();
-      });
-
-      animId = requestAnimationFrame(renderAROverlay);
-    };
-
-    animId = requestAnimationFrame(renderAROverlay);
-    return () => cancelAnimationFrame(animId);
-  }, [detections, selectedDetection, sourceType, activeMode]);
-
-  // Tap-to-Inspect: click coordinate math
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
-
-    const normX = (clickX / rect.width) * 1000;
-    const normY = (clickY / rect.height) * 1000;
-
-    const clicked = detections.find(det => {
-      const [ymin, xmin, ymax, xmax] = det.box_2d;
-      return normX >= xmin && normX <= xmax && normY >= ymin && normY <= ymax;
+      // Number tag (full labels live in the list below; long labels clutter a phone screen)
+      ctx.shadowBlur = 0;
+      const tag = isSelected ? `${index + 1}. ${det.label}` : `${index + 1}`;
+      ctx.font = 'bold 11px "JetBrains Mono", monospace';
+      const tw = Math.min(ctx.measureText(tag).width + 10, cw - 4);
+      const tagH = 18;
+      const tx = Math.min(Math.max(2, x), cw - tw - 2);
+      const ty = y - tagH - 2 < 0 ? y + 2 : y - tagH - 2;
+      ctx.fillStyle = 'rgba(5, 8, 17, 0.9)';
+      ctx.fillRect(tx, ty, tw, tagH);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(tx, ty, tw, tagH);
+      ctx.fillStyle = color;
+      ctx.fillText(tag, tx + 5, ty + 13, tw - 10);
+      ctx.restore();
     });
+    ctx.restore();
+  }, [detections, selectedDetection, containerSize, getMediaRect, still, isAutoWatchActive]);
 
-    if (clicked) {
+  // Tap-to-inspect: map the tap back into normalized image coordinates.
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const bounds = e.currentTarget.getBoundingClientRect();
+    const rect = getMediaRect();
+    const normX = ((e.clientX - bounds.left - rect.x) / rect.w) * 1000;
+    const normY = ((e.clientY - bounds.top - rect.y) / rect.h) * 1000;
+
+    // Prefer the smallest box containing the tap so nested parts stay selectable.
+    const hits = detections
+      .filter(det => {
+        const [ymin, xmin, ymax, xmax] = det.box_2d;
+        return normX >= xmin && normX <= xmax && normY >= ymin && normY <= ymax;
+      })
+      .sort((a, b) => (a.box_2d[2] - a.box_2d[0]) * (a.box_2d[3] - a.box_2d[1]) - (b.box_2d[2] - b.box_2d[0]) * (b.box_2d[3] - b.box_2d[1]));
+
+    if (hits[0]) {
       playTacticalAudio.lockOn();
-      onSelectDetection(clicked);
+      onSelectDetection(hits[0]);
     } else {
       onSelectDetection(null);
     }
   };
 
-  // Capture current frame for Gemini analysis
-  const captureCurrentFrame = () => {
-    playTacticalAudio.chirp();
-
-    if (sourceType === 'SAMPLE_PHOTO') {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const base64 = canvas.toDataURL('image/jpeg', 0.85);
-        onCaptureFrame(base64);
-      }
-      return;
-    }
-
-    if (uploadedImageSrc) {
-      onCaptureFrame(uploadedImageSrc);
-      return;
-    }
-
-    // Video frame capture
+  const captureLive = useCallback((): LoadedImage | null => {
     const video = videoRef.current;
-    if (!video || video.readyState < 2) {
-      console.warn('Video not ready for frame capture');
+    if (!video || video.readyState < 2 || source !== 'LIVE') return null;
+    return captureVideoFrame(video);
+  }, [source]);
+
+  const toggleTorch = useCallback(async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || !torchAvailable) return;
+    try {
+      const next = !isTorchOn;
+      await track.applyConstraints({ advanced: [{ torch: next } as any] });
+      setIsTorchOn(next);
+      playTacticalAudio.chirp();
+    } catch (err) {
+      console.warn('Torch toggle failed:', err);
+    }
+  }, [isTorchOn, torchAvailable]);
+
+  useEffect(() => {
+    liveCaptureRef.current = captureLive;
+    torchToggleRef.current = toggleTorch;
+  }, [captureLive, toggleTorch, liveCaptureRef, torchToggleRef]);
+
+  const handleScanButton = () => {
+    playTacticalAudio.chirp();
+    if (still) {
+      onScanImage({ dataUrl: still.src, width: still.width, height: still.height }, true);
       return;
     }
-
-    const offscreenCanvas = document.createElement('canvas');
-    offscreenCanvas.width = video.videoWidth || 1280;
-    offscreenCanvas.height = video.videoHeight || 720;
-    const ctx = offscreenCanvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
-    const base64 = offscreenCanvas.toDataURL('image/jpeg', 0.85);
-    onCaptureFrame(base64);
+    const frame = captureLive();
+    if (frame) onScanImage(frame, true);
+    else captureInputRef.current?.click(); // no live camera: fall back to the native camera
   };
 
-  // Handle uploaded macro image
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = ''; // allow picking the same file again
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const result = ev.target?.result as string;
-      setUploadedImageSrc(result);
-      setSourceType('SAMPLE_PHOTO');
-      const img = new Image();
-      img.onload = () => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0);
-        onCaptureFrame(result);
-      };
-      img.src = result;
-    };
-    reader.readAsDataURL(file);
+    try {
+      const image = await fileToScaledImage(file);
+      onScanImage(image, true);
+    } catch (err) {
+      console.warn('Could not read image:', err);
+      setCameraError('Could not read that image. Try a JPEG or PNG photo.');
+    }
   };
+
+  const backToLive = () => {
+    playTacticalAudio.chirp();
+    onStillChange(null);
+    onClearDetections();
+    setSource('LIVE');
+  };
+
+  const selectDemo = (board: SampleBoard) => {
+    playTacticalAudio.chirp();
+    setDemoBoardId(board.id);
+    const img = renderSampleBoard(board);
+    onStillChange({ src: img.src, width: img.width, height: img.height, demoBoardId: board.id });
+    onLoadDemoBoard(board);
+  };
+
+  const flipCamera = () => {
+    playTacticalAudio.chirp();
+    setSelectedDeviceId('');
+    setFacingMode(f => (f === 'environment' ? 'user' : 'environment'));
+    if (source !== 'LIVE' || still) backToLive();
+  };
+
+  const chip = (active: boolean) =>
+    `min-h-[36px] px-2.5 rounded-lg flex items-center gap-1.5 transition-colors ${
+      active ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-300 hover:text-cyan-300'
+    }`;
 
   return (
-    <div className="relative w-full flex-1 min-h-[380px] sm:min-h-[460px] flex flex-col bg-[#050811] rounded-2xl border border-cyan-950/80 overflow-hidden shadow-2xl">
-      {/* Top Optics Controls Toolbar */}
-      <div className="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-2 pointer-events-auto flex-wrap">
-        {/* Source Selector Dropdown Chips */}
-        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[#050811]/90 backdrop-blur-md border border-cyan-900/40 text-xs font-mono">
-          <button
-            onClick={() => {
-              setSourceType('REAR_CAM');
-              onClearDetections();
+    <div className="relative w-full flex-1 flex flex-col bg-[#050811] rounded-2xl border border-cyan-950/80 overflow-hidden shadow-2xl">
+      {/* Viewport */}
+      <div
+        ref={containerRef}
+        className="relative w-full h-[52dvh] min-h-[300px] lg:h-auto lg:flex-1 lg:min-h-[460px] bg-black overflow-hidden"
+      >
+        {source === 'LIVE' && (
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            onLoadedMetadata={e => {
+              const v = e.currentTarget;
+              setVideoSize({ w: v.videoWidth, h: v.videoHeight });
+              setIsVideoReady(true);
             }}
-            className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
-              sourceType === 'REAR_CAM' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-300 hover:text-cyan-300'
-            }`}
-            title="Use Workbench Camera (Rear Environment)"
-          >
-            <Camera className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">BENCH CAM</span>
+            onResize={e => setVideoSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
+            className={`absolute inset-0 w-full h-full object-cover z-10 ${showingStill ? 'invisible' : ''}`}
+          />
+        )}
+
+        {still && (
+          <img src={still.src} alt="Analyzed frame" className="absolute inset-0 w-full h-full object-contain z-10 bg-black" />
+        )}
+
+        <canvas ref={canvasRef} onClick={handleCanvasClick} className="absolute inset-0 w-full h-full z-20 cursor-crosshair" />
+
+        {/* Top-left: source controls */}
+        <div className="absolute top-2 left-2 z-30 flex items-center gap-1 p-1 rounded-xl bg-[#050811]/85 backdrop-blur-md border border-cyan-900/40 text-xs font-mono">
+          {showingStill && source === 'LIVE' ? (
+            <button onClick={backToLive} className={chip(false)} title="Back to live camera">
+              <Video className="w-4 h-4 text-cyan-400" />
+              <span>LIVE</span>
+            </button>
+          ) : (
+            <button onClick={() => (source === 'LIVE' ? null : backToLive())} className={chip(source === 'LIVE')} title="Live camera">
+              <Camera className="w-4 h-4" />
+              <span className="hidden xs:inline">LIVE</span>
+            </button>
+          )}
+
+          <button onClick={flipCamera} className={chip(false)} title="Flip camera">
+            <SwitchCamera className="w-4 h-4 text-cyan-400" />
           </button>
 
-          {/* Quick Flip Cam Button */}
-          <button
-            onClick={flipCamera}
-            className="px-2 py-1.5 rounded-lg text-slate-300 hover:text-cyan-300 flex items-center gap-1 transition-colors"
-            title="Flip Camera (Rear / Front / Microscope)"
-          >
-            <SwitchCamera className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="hidden md:inline">FLIP</span>
-          </button>
-
-          {/* Device Selector Trigger */}
           {videoDevices.length > 1 && (
             <div className="relative">
-              <button
-                onClick={() => setShowDevicePicker(!showDevicePicker)}
-                className="px-2 py-1.5 rounded-lg text-slate-400 hover:text-white flex items-center gap-1"
-                title="Select Video Hardware Device"
-              >
-                <Sliders className="w-3 h-3 text-cyan-400" />
+              <button onClick={() => setShowDevicePicker(v => !v)} className={chip(false)} title="Choose camera">
+                <Sliders className="w-4 h-4 text-cyan-400" />
               </button>
-
               {showDevicePicker && (
-                <div className="absolute top-full left-0 mt-1 w-56 rounded-xl bg-[#0b1329] border border-cyan-500/40 p-2 shadow-2xl z-40 space-y-1">
+                <div className="absolute top-full left-0 mt-1 w-56 max-w-[70vw] rounded-xl bg-[#0b1329] border border-cyan-500/40 p-2 shadow-2xl z-40 space-y-1">
                   <div className="text-[10px] text-slate-400 font-bold px-2 py-1 border-b border-slate-800">
-                    SELECT VIDEO INPUT ({videoDevices.length})
+                    CAMERAS ({videoDevices.length})
                   </div>
                   {videoDevices.map((d, i) => (
                     <button
@@ -554,12 +478,10 @@ export const CameraARCanvas: React.FC<CameraARCanvasProps> = ({
                       onClick={() => {
                         setSelectedDeviceId(d.deviceId);
                         setShowDevicePicker(false);
-                        startCamera(d.deviceId);
+                        if (source !== 'LIVE' || still) backToLive();
                       }}
-                      className={`w-full text-left px-2 py-1.5 rounded text-[11px] truncate ${
-                        selectedDeviceId === d.deviceId
-                          ? 'bg-cyan-500 text-slate-950 font-bold'
-                          : 'text-slate-300 hover:bg-slate-800'
+                      className={`w-full text-left px-2 py-2 rounded text-[11px] truncate ${
+                        selectedDeviceId === d.deviceId ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-300 hover:bg-slate-800'
                       }`}
                     >
                       {d.label || `Camera ${i + 1}`}
@@ -572,161 +494,151 @@ export const CameraARCanvas: React.FC<CameraARCanvasProps> = ({
 
           <button
             onClick={() => {
-              setSourceType('SAMPLE_PHOTO');
-              if (selectedSampleBoard) {
-                // In test boards mode, demo data is expected
-              }
+              setSource('DEMO');
+              const board = SAMPLE_BOARDS.find(b => b.id === demoBoardId) ?? SAMPLE_BOARDS[0];
+              selectDemo(board);
             }}
-            className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
-              sourceType === 'SAMPLE_PHOTO' ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-300 hover:text-cyan-300'
-            }`}
-            title="Use Built-in Benchmark Test Boards"
+            className={chip(source === 'DEMO')}
+            title="Offline demo boards"
           >
-            <Layers className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">TEST BOARDS</span>
+            <Layers className="w-4 h-4" />
+            <span className="hidden xs:inline">DEMO</span>
           </button>
-
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="px-2 py-1.5 rounded-lg text-slate-300 hover:text-cyan-300 flex items-center gap-1 transition-colors"
-            title="Upload Macro PCB Photo"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">UPLOAD</span>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={handleFileUpload}
-          />
         </div>
 
-        {/* Action Controls: Torch + AUTO-WATCH + SCAN FRAME */}
-        <div className="flex items-center gap-2">
-          {/* Torch & Flashlight Toggle */}
-          {sourceType === 'REAR_CAM' && (
+        {/* Top-right: torch + auto-watch */}
+        <div className="absolute top-2 right-2 z-30 flex items-center gap-1.5">
+          {source === 'LIVE' && torchAvailable && !showingStill && (
             <button
               onClick={toggleTorch}
-              className={`min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl backdrop-blur-md border font-mono text-xs flex items-center gap-1.5 transition-all ${
+              className={`min-h-[40px] min-w-[40px] px-2.5 rounded-xl backdrop-blur-md border font-mono text-xs flex items-center justify-center gap-1.5 ${
                 isTorchOn
                   ? 'bg-amber-400 text-slate-950 border-amber-300 font-bold shadow-[0_0_15px_rgba(251,191,36,0.6)]'
-                  : 'bg-[#050811]/80 text-amber-300 border-amber-500/40 hover:bg-amber-950/40'
+                  : 'bg-[#050811]/85 text-amber-300 border-amber-500/40'
               }`}
-              title={torchAvailable ? 'Toggle Torch Light' : 'Screen Light Assist'}
+              title="Toggle flashlight"
             >
               {isTorchOn ? <Zap className="w-4 h-4 fill-current" /> : <ZapOff className="w-4 h-4" />}
-              <span className="hidden xs:inline">TORCH</span>
             </button>
           )}
-
-          {/* Hands-Free AUTO-WATCH (8s) Toggle */}
-          <button
-            onClick={onToggleAutoWatch}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl backdrop-blur-md border font-mono text-xs flex items-center gap-1.5 transition-all ${
-              isAutoWatchActive
-                ? 'bg-rose-500 text-white font-bold border-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.6)] animate-pulse'
-                : 'bg-[#050811]/90 text-cyan-300 border-cyan-500/40 hover:bg-cyan-950/40'
-            }`}
-            title="Continuous bench overwatch every 8s while hands are full"
-          >
-            <Radio className="w-3.5 h-3.5" />
-            <span>{isAutoWatchActive ? `WATCH (${autoWatchSecondsLeft}s)` : 'AUTO-WATCH (8s)'}</span>
-          </button>
-
-          {/* Quick Frame Scan Button */}
-          <button
-            onClick={captureCurrentFrame}
-            disabled={isAnalyzing}
-            className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-cyan-500 text-slate-950 font-mono font-bold text-xs flex items-center gap-1.5 hover:bg-cyan-400 active:scale-95 transition-all shadow-[0_0_12px_rgba(34,211,238,0.4)] disabled:opacity-50"
-            title="Analyze Current Board Frame with Gemini Vision"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isAnalyzing ? 'animate-spin' : ''}`} />
-            <span>{isAnalyzing ? 'REASONING...' : 'SCAN FRAME'}</span>
-          </button>
+          {source === 'LIVE' && (
+            <button
+              onClick={onToggleAutoWatch}
+              disabled={!isVideoReady && !isAutoWatchActive}
+              className={`min-h-[40px] px-2.5 rounded-xl backdrop-blur-md border font-mono text-[11px] flex items-center gap-1.5 disabled:opacity-40 ${
+                isAutoWatchActive
+                  ? 'bg-rose-500 text-white font-bold border-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.6)]'
+                  : 'bg-[#050811]/85 text-cyan-300 border-cyan-500/40'
+              }`}
+              title="Re-scan the live camera automatically every few seconds"
+            >
+              <Radio className="w-4 h-4" />
+              <span>{isAutoWatchActive ? `${autoWatchSecondsLeft}s` : 'AUTO'}</span>
+            </button>
+          )}
         </div>
-      </div>
 
-      {/* Camera Viewport & AR Layer Container */}
-      <div
-        ref={containerRef}
-        className="relative w-full flex-1 min-h-[340px] flex items-center justify-center bg-black overflow-hidden"
-      >
-        {/* Live Video Element */}
-        {sourceType !== 'SAMPLE_PHOTO' && (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="absolute inset-0 w-full h-full object-cover z-10"
-          />
-        )}
-
-        {/* AR Canvas Overlay Layer */}
-        <canvas
-          ref={canvasRef}
-          onClick={handleCanvasClick}
-          className={`absolute inset-0 w-full h-full cursor-crosshair z-20 ${
-            sourceType === 'SAMPLE_PHOTO' ? 'object-contain' : ''
-          }`}
-        />
-
-        {/* Scanline Sweep Animation during Analysis */}
+        {/* Analysis progress */}
         {isAnalyzing && (
-          <div className="absolute inset-0 z-25 pointer-events-none overflow-hidden">
-            <div className="w-full h-2 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_20px_#22d3ee] animate-[bounce_2s_infinite]" />
-            <div className="absolute inset-0 bg-cyan-950/20 backdrop-blur-[1px]" />
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 rounded-xl bg-black/90 border border-cyan-400 text-cyan-300 font-mono text-xs flex items-center gap-2 shadow-2xl">
+          <div className="absolute inset-0 z-[25] pointer-events-none overflow-hidden">
+            <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_20px_#22d3ee] scan-line" />
+            <div className="absolute inset-0 bg-cyan-950/20" />
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-max max-w-[90%] px-3 py-2 rounded-xl bg-black/90 border border-cyan-400 text-cyan-300 font-mono text-[11px] flex items-center gap-2 shadow-2xl">
               <Crosshair className="w-4 h-4 text-cyan-400 animate-spin" />
-              <span>JARVIS OPTICAL REASONING IN PROGRESS...</span>
+              <span>ANALYZING… (5-20s)</span>
             </div>
           </div>
         )}
 
-        {/* Auto-Watch Active Indicator Badge */}
         {isAutoWatchActive && !isAnalyzing && (
-          <div className="absolute top-16 left-3 z-30 px-2.5 py-1 rounded-lg bg-black/80 border border-rose-500/60 text-rose-300 font-mono text-[10px] flex items-center gap-1.5 shadow-lg">
+          <div className="absolute top-14 right-2 z-30 px-2 py-1 rounded-lg bg-black/80 border border-rose-500/60 text-rose-300 font-mono text-[10px] flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-            <span>BENCH OVERWATCH LIVE // RE-SCAN IN {autoWatchSecondsLeft}s</span>
+            <span>OVERWATCH LIVE</span>
           </div>
         )}
 
-        {/* Floating 3-Second Rule & Walk-and-Rock Visual Countdown HUD Overlay */}
-        <SolderCoachOverlay isActiveMode={activeMode === 'SOLDER_COACH'} isFloatingOverlay={true} />
+        {source === 'DEMO' && (
+          <div className="absolute top-14 left-2 z-30 px-2 py-1 rounded-lg bg-amber-500/90 text-slate-950 font-mono font-bold text-[10px]">
+            DEMO DATA - NOT A REAL SCAN
+          </div>
+        )}
 
-        {/* Camera Permission / Error Fallback Notice */}
-        {cameraError && sourceType !== 'SAMPLE_PHOTO' && (
-          <div className="absolute z-30 inset-4 flex flex-col items-center justify-center p-6 text-center rounded-xl bg-[#0b1329]/95 border border-rose-500/40 text-slate-200">
+        <SolderCoachOverlay coach={coach} isActiveMode={activeMode === 'SOLDER_COACH'} isFloatingOverlay />
+
+        {cameraError && source === 'LIVE' && !showingStill && (
+          <div className="absolute z-30 inset-3 top-14 flex flex-col items-center justify-center p-4 text-center rounded-xl bg-[#0b1329]/95 border border-rose-500/40 text-slate-200">
             <AlertTriangle className="w-8 h-8 text-rose-400 mb-2" />
-            <h4 className="font-mono font-bold text-sm text-rose-300 uppercase">Camera Hardware Notice</h4>
+            <h4 className="font-mono font-bold text-sm text-rose-300 uppercase">Camera unavailable</h4>
             <p className="text-xs text-slate-300 mt-1 max-w-md leading-relaxed">{cameraError}</p>
+            <div className="mt-4 flex flex-wrap gap-2 justify-center">
+              <button
+                onClick={() => captureInputRef.current?.click()}
+                className="px-4 py-2.5 rounded-xl bg-cyan-500 text-slate-950 font-mono font-bold text-xs uppercase"
+              >
+                Take photo
+              </button>
+              <button
+                onClick={() => setRestartToken(t => t + 1)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-200 font-mono text-xs uppercase"
+              >
+                Retry camera
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Selected part quick card */}
+        {selectedDetection && (
+          <div className="absolute bottom-2 left-2 right-2 z-30 p-2.5 rounded-xl bg-[#050811]/95 border border-cyan-400/80 shadow-[0_0_20px_rgba(34,211,238,0.25)] backdrop-blur-md flex items-center gap-2">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase shrink-0 ${
+                    selectedDetection.type === 'HAZARD' ? 'bg-rose-500/20 text-rose-300' : 'bg-cyan-500/20 text-cyan-300'
+                  }`}
+                >
+                  {selectedDetection.type.replace('_', ' ')}
+                </span>
+                <h4 className="text-xs font-mono font-bold text-white truncate">{selectedDetection.label}</h4>
+              </div>
+              <p className="text-[11px] text-slate-300 mt-0.5 truncate">
+                {[selectedDetection.part_number, formatPrice(selectedDetection.est_value, currency), selectedDetection.pinout_notes]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </p>
+            </div>
+            {selectedDetection.type !== 'HAZARD' && (
+              <button
+                onClick={() => onLogHarvestedPart(selectedDetection)}
+                className="min-h-[40px] px-3 rounded-lg bg-amber-500 text-slate-950 font-mono font-bold text-xs flex items-center gap-1 active:scale-95 shrink-0"
+                title="Save to parts bin"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>LOG</span>
+              </button>
+            )}
             <button
-              onClick={() => setSourceType('SAMPLE_PHOTO')}
-              className="mt-4 px-4 py-2 rounded-xl bg-cyan-500 text-slate-950 font-mono font-bold text-xs uppercase tracking-wider hover:bg-cyan-400 transition"
+              onClick={() => onSelectDetection(null)}
+              className="min-h-[40px] min-w-[40px] rounded-lg bg-slate-800 text-slate-300 flex items-center justify-center shrink-0"
+              title="Dismiss"
             >
-              Switch to Bench Practice Boards
+              <X className="w-4 h-4" />
             </button>
           </div>
         )}
       </div>
 
-      {/* Bottom Preset Switcher (When in TEST BOARDS mode) */}
-      {sourceType === 'SAMPLE_PHOTO' && (
-        <div className="bg-[#0b1329] border-t border-cyan-950/80 px-3 py-2 flex items-center gap-2 overflow-x-auto z-30">
-          <span className="text-[10px] font-mono text-slate-400 uppercase shrink-0">BENCH PRESETS:</span>
+      {/* Demo board presets */}
+      {source === 'DEMO' && (
+        <div className="bg-[#0b1329] border-t border-cyan-950/80 px-2 py-2 flex items-center gap-2 overflow-x-auto">
           {SAMPLE_BOARDS.map(board => (
             <button
               key={board.id}
-              onClick={() => {
-                setSelectedSampleBoard(board);
-                playTacticalAudio.chirp();
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono whitespace-nowrap shrink-0 transition-colors ${
-                selectedSampleBoard?.id === board.id
+              onClick={() => selectDemo(board)}
+              className={`min-h-[36px] px-3 rounded-lg text-xs font-mono whitespace-nowrap shrink-0 ${
+                demoBoardId === board.id
                   ? 'bg-cyan-500 text-slate-950 font-bold'
-                  : 'bg-slate-900 text-slate-300 hover:text-cyan-300 border border-slate-800'
+                  : 'bg-slate-900 text-slate-300 border border-slate-800'
               }`}
             >
               {board.title}
@@ -735,47 +647,37 @@ export const CameraARCanvas: React.FC<CameraARCanvasProps> = ({
         </div>
       )}
 
-      {/* Selected Component Quick Inspection Pill (Tap-to-Inspect result) */}
-      {selectedDetection && (
-        <div className="absolute bottom-3 left-3 right-3 z-30 p-3 rounded-xl bg-[#050811]/95 border border-cyan-400/80 shadow-[0_0_20px_rgba(34,211,238,0.25)] backdrop-blur-md flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase ${
-                  selectedDetection.type === 'HAZARD'
-                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                    : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                }`}
-              >
-                {selectedDetection.type}
-              </span>
-              <h4 className="text-xs sm:text-sm font-mono font-bold text-white truncate">
-                {selectedDetection.label}
-              </h4>
-            </div>
-            <p className="text-[11px] text-slate-300 font-sans mt-0.5 truncate">
-              <strong>Pinout:</strong> {selectedDetection.pinout_notes}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => onLogHarvestedPart(selectedDetection)}
-              className="px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono font-bold text-xs flex items-center gap-1.5 active:scale-95 transition"
-              title="Save to Salvaged Parts Bin"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>+ LOG HARVESTED</span>
-            </button>
-            <button
-              onClick={() => onSelectDetection(null)}
-              className="px-2 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono"
-            >
-              DISMISS
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Bottom action bar: thumb-reachable on phones */}
+      <div className="grid grid-cols-[1fr_1.6fr_1fr] gap-2 p-2 bg-[#080e21] border-t border-cyan-950/70">
+        <button
+          onClick={() => captureInputRef.current?.click()}
+          disabled={isAnalyzing}
+          className="min-h-[52px] rounded-xl bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px] flex flex-col items-center justify-center gap-0.5 active:scale-95 disabled:opacity-50"
+          title="Take a full-resolution photo with your camera app"
+        >
+          <Aperture className="w-5 h-5 text-cyan-400" />
+          <span>PHOTO</span>
+        </button>
+        <button
+          onClick={handleScanButton}
+          disabled={isAnalyzing || source === 'DEMO'}
+          className="min-h-[52px] rounded-xl bg-cyan-500 text-slate-950 font-mono font-bold text-sm flex items-center justify-center gap-2 active:scale-95 shadow-[0_0_14px_rgba(34,211,238,0.45)] disabled:opacity-50"
+        >
+          <RefreshCw className={`w-5 h-5 ${isAnalyzing ? 'animate-spin' : ''}`} />
+          <span>{isAnalyzing ? 'ANALYZING' : showingStill ? 'RE-SCAN' : 'SCAN'}</span>
+        </button>
+        <button
+          onClick={() => galleryInputRef.current?.click()}
+          disabled={isAnalyzing}
+          className="min-h-[52px] rounded-xl bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px] flex flex-col items-center justify-center gap-0.5 active:scale-95 disabled:opacity-50"
+          title="Pick a photo from your gallery"
+        >
+          <ImageUp className="w-5 h-5 text-cyan-400" />
+          <span>GALLERY</span>
+        </button>
+        <input ref={captureInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFile} />
+        <input ref={galleryInputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+      </div>
     </div>
   );
 };

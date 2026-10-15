@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   Database,
-  Send,
   CheckCircle,
   AlertTriangle,
   X,
@@ -10,13 +9,20 @@ import {
   Check,
   Server,
   Activity,
-  ShieldCheck,
   Key,
-  Video,
+  Settings,
+  Coins,
+  Globe,
 } from 'lucide-react';
 import { UserSettings, saveStoredSettings } from '../utils/storage';
-import { SalvagedPart, BenchStats, EcosystemStatus } from '../types';
+import { SalvagedPart, BenchStats, EcosystemStatus, Currency } from '../types';
 import { playTacticalAudio } from '../utils/audio';
+import { DEFAULT_API_BASE, postJSON } from '../utils/api';
+import { copyText } from '../utils/shopping';
+
+const CURRENCIES: Currency[] = ['USD', 'ZAR', 'EUR', 'GBP', 'INR', 'AUD', 'CAD'];
+const inputCls =
+  'w-full min-h-[44px] px-3 rounded-xl bg-[#050811] border border-slate-800 text-white font-mono text-base sm:text-xs focus:outline-none focus:border-cyan-400';
 
 interface NASSyncDrawerProps {
   isOpen: boolean;
@@ -40,7 +46,9 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
   const [jarvisCoreUrl, setJarvisCoreUrl] = useState(settings.jarvisCoreApiUrl);
   const [secondBrainAuthToken, setSecondBrainAuthToken] = useState(settings.secondBrainAuthToken);
   const [webhookUrl, setWebhookUrl] = useState(settings.nasWebhookUrl);
-  const [externalCameraUrl, setExternalCameraUrl] = useState(settings.externalCameraStreamUrl || settings.ipCameraUrl);
+  const [currency, setCurrency] = useState<Currency>(settings.currency);
+  const [accessKey, setAccessKey] = useState(settings.accessKey);
+  const [apiBaseUrl, setApiBaseUrl] = useState(settings.apiBaseUrl);
 
   const [isPinging, setIsPinging] = useState(false);
   const [pingResult, setPingResult] = useState<{ success: boolean; latencyMs?: number; message: string } | null>(null);
@@ -55,8 +63,9 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
       jarvisCoreApiUrl: jarvisCoreUrl.trim(),
       secondBrainAuthToken: secondBrainAuthToken.trim(),
       nasWebhookUrl: webhookUrl.trim(),
-      externalCameraStreamUrl: externalCameraUrl.trim(),
-      ipCameraUrl: externalCameraUrl.trim(),
+      currency,
+      accessKey: accessKey.trim(),
+      apiBaseUrl: apiBaseUrl.trim().replace(/\/+$/, ''),
     };
     onUpdateSettings(updated);
     saveStoredSettings(updated);
@@ -68,30 +77,31 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
     setPingResult(null);
     playTacticalAudio.chirp();
 
+    if (!jarvisCoreUrl.trim()) {
+      setPingResult({ success: false, message: 'Enter a Jarvis core URL first.' });
+      setIsPinging(false);
+      return;
+    }
+
     try {
-      const res = await fetch('/api/jarvis/telemetry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jarvisCoreUrl: jarvisCoreUrl.trim() || undefined,
-          authToken: secondBrainAuthToken.trim() || undefined,
-          state: {
-            event: 'HANDSHAKE_TEST',
-            totalParts: parts.length,
-            cravingsDefeated: stats.cravingsDefeated,
-            activeClient: 'JARVIS // BENCH-OS v2.5',
-            timestamp: new Date().toISOString(),
-          },
-        }),
+      const data = await postJSON<{ success: boolean; latencyMs?: number; error?: string }>('/api/jarvis/telemetry', {
+        jarvisCoreUrl: jarvisCoreUrl.trim(),
+        authToken: secondBrainAuthToken.trim() || undefined,
+        state: {
+          event: 'HANDSHAKE_TEST',
+          totalParts: parts.length,
+          cravingsDefeated: stats.cravingsDefeated,
+          activeClient: 'BENCH-OS v3',
+          timestamp: new Date().toISOString(),
+        },
       });
 
-      const data = await res.json();
-      if (res.ok && data.success) {
-        const latency = data.latencyMs || 24;
+      if (data.success) {
+        const latency = data.latencyMs ?? 0;
         setPingResult({
           success: true,
           latencyMs: latency,
-          message: `Ecosystem Handshake Successful (${latency}ms latency). Second Brain synchronized.`,
+          message: `Connected (${latency}ms).`,
         });
         playTacticalAudio.success();
         if (onEcosystemStatusChange) {
@@ -105,7 +115,7 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
       } else {
         setPingResult({
           success: false,
-          message: data.error || 'Failed to connect. Running in autonomous local bench mode.',
+          message: data.error || 'Could not connect. The app still works standalone.',
         });
         playTacticalAudio.alert();
         if (onEcosystemStatusChange) {
@@ -190,34 +200,67 @@ server = HTTPServer(('0.0.0.0', PORT), JarvisHandler)
 print(f"JARVIS Ecosystem Receiver listening on port {PORT}")
 server.serve_forever()`;
 
-  const copyScript = () => {
+  const copyScript = async () => {
     const text = activeScriptTab === 'node' ? nodeScript : pythonScript;
-    navigator.clipboard.writeText(text);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2000);
+    if (await copyText(text)) {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md">
-      <div className="relative w-full max-w-2xl max-h-[92vh] flex flex-col rounded-2xl bg-[#090e1f] border border-cyan-500/40 shadow-2xl text-slate-100 overflow-hidden">
+      <div className="relative w-full max-w-2xl max-h-[92dvh] flex flex-col rounded-2xl bg-[#090e1f] border border-cyan-500/40 shadow-2xl text-slate-100 overflow-hidden">
         {/* Header */}
-        <div className="px-5 py-3.5 bg-[#050811] border-b border-cyan-950/80 flex items-center justify-between gap-3 shrink-0">
+        <div className="px-3 sm:px-5 py-3 bg-[#050811] border-b border-cyan-950/80 flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2 text-cyan-400 font-mono font-bold text-sm tracking-wide uppercase">
-            <Database className="w-5 h-5 text-cyan-400" />
-            <span>JARVIS // SECOND BRAIN & NAS BRIDGE</span>
+            <Settings className="w-5 h-5 text-cyan-400" />
+            <span>SETTINGS</span>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-white">
+          <button onClick={onClose} className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-400 hover:text-white" title="Close">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Body */}
-        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 text-xs font-mono">
+        <div className="p-3 sm:p-5 overflow-y-auto space-y-4 flex-1 text-xs font-mono">
+          {/* Section 0: General */}
+          <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
+            <div className="flex items-center gap-2 text-emerald-300 font-bold uppercase text-[11px]">
+              <Coins className="w-4 h-4 text-emerald-400" />
+              <span>GENERAL</span>
+            </div>
+            <div>
+              <label className="text-slate-400 block text-[10px] mb-1">PRICE CURRENCY (estimates + Amazon store region)</label>
+              <select value={currency} onChange={e => setCurrency(e.target.value as Currency)} className={inputCls}>
+                {CURRENCIES.map(c => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-slate-400 block text-[10px] mb-1">ACCESS KEY (only if the server sets APP_ACCESS_KEY)</label>
+              <div className="relative">
+                <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} placeholder="Leave blank if not required" className={inputCls} autoComplete="off" />
+                <Key className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+            <div>
+              <label className="text-slate-400 block text-[10px] mb-1">SERVER URL (advanced - blank uses the built-in default)</label>
+              <div className="relative">
+                <input type="url" value={apiBaseUrl} onChange={e => setApiBaseUrl(e.target.value)} placeholder={DEFAULT_API_BASE || 'Same server as this page'} className={inputCls} autoComplete="off" />
+                <Globe className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+          </div>
+
           {/* Section 1: Jarvis Core API & Token */}
           <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
             <div className="flex items-center gap-2 text-cyan-300 font-bold uppercase text-[11px]">
               <Server className="w-4 h-4 text-cyan-400" />
-              <span>JARVIS CORE AGENT ENGINE ENDPOINT</span>
+              <span>JARVIS CORE (OPTIONAL)</span>
             </div>
 
             <div>
@@ -229,7 +272,7 @@ server.serve_forever()`;
                 value={jarvisCoreUrl}
                 onChange={e => setJarvisCoreUrl(e.target.value)}
                 placeholder="http://192.168.1.100:8000/api/v1/jarvis"
-                className="w-full px-3 py-2 rounded-xl bg-[#050811] border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-cyan-400"
+                className={inputCls}
               />
             </div>
 
@@ -243,7 +286,7 @@ server.serve_forever()`;
                   value={secondBrainAuthToken}
                   onChange={e => setSecondBrainAuthToken(e.target.value)}
                   placeholder="Bearer token or secret key..."
-                  className="w-full px-3 py-2 rounded-xl bg-[#050811] border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-cyan-400"
+                  className={inputCls}
                 />
                 <Key className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
               </div>
@@ -254,7 +297,7 @@ server.serve_forever()`;
           <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
             <div className="flex items-center gap-2 text-amber-300 font-bold uppercase text-[11px]">
               <Database className="w-4 h-4 text-amber-400" />
-              <span>HOME NAS / SECOND BRAIN WEBHOOK & CAMERA</span>
+              <span>HOME NAS WEBHOOK (OPTIONAL)</span>
             </div>
 
             <div>
@@ -266,25 +309,10 @@ server.serve_forever()`;
                 value={webhookUrl}
                 onChange={e => setWebhookUrl(e.target.value)}
                 placeholder="http://192.168.1.150:8080/jarvis-webhook"
-                className="w-full px-3 py-2 rounded-xl bg-[#050811] border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-cyan-400"
+                className={inputCls}
               />
             </div>
 
-            <div>
-              <label className="text-slate-400 block text-[10px] mb-1">
-                EXTERNAL_CAMERA_STREAM_URL (Dedicated Bench Cam / MJPEG / RTSP Bridge)
-              </label>
-              <div className="relative">
-                <input
-                  type="url"
-                  value={externalCameraUrl}
-                  onChange={e => setExternalCameraUrl(e.target.value)}
-                  placeholder="http://192.168.1.120:8080/video or http://100.x.y.z:8080/stream"
-                  className="w-full px-3 py-2 rounded-xl bg-[#050811] border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-cyan-400"
-                />
-                <Video className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
-              </div>
-            </div>
           </div>
 
           {/* Handshake Ping Action */}
@@ -292,10 +320,10 @@ server.serve_forever()`;
             <button
               onClick={handleTestHandshake}
               disabled={isPinging}
-              className="w-full py-2.5 px-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition"
+              className="w-full min-h-[44px] px-4 rounded-xl bg-slate-800 border border-cyan-500/40 disabled:opacity-50 text-cyan-200 font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition"
             >
               <Activity className="w-4 h-4" />
-              <span>{isPinging ? 'TESTING HANDSHAKE...' : 'TEST ECOSYSTEM HANDSHAKE'}</span>
+              <span>{isPinging ? 'TESTING...' : 'TEST JARVIS CORE CONNECTION'}</span>
             </button>
 
             {pingResult && (
@@ -359,10 +387,10 @@ server.serve_forever()`;
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3 bg-[#050811] border-t border-cyan-950/80 flex items-center justify-end gap-2 shrink-0">
+        <div className="px-3 sm:px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-[#050811] border-t border-cyan-950/80 flex items-center justify-end gap-2 shrink-0">
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs"
+            className="min-h-[44px] px-4 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs"
           >
             Cancel
           </button>
@@ -371,9 +399,9 @@ server.serve_forever()`;
               handleSave();
               onClose();
             }}
-            className="px-4 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-mono font-bold text-xs uppercase"
+            className="min-h-[44px] px-5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-mono font-bold text-xs uppercase"
           >
-            Save & Connect
+            Save
           </button>
         </div>
       </div>

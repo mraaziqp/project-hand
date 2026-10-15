@@ -1,20 +1,10 @@
 import React, { useState } from 'react';
-import {
-  Code2,
-  Copy,
-  Check,
-  Zap,
-  Terminal,
-  Cpu,
-  HelpCircle,
-  Table,
-  Layers,
-} from 'lucide-react';
+import { Copy, Check, Zap, HelpCircle } from 'lucide-react';
 import { CircuitFirmware } from '../types';
+import { copyText } from '../utils/shopping';
 
 interface FirmwareSuiteGeneratorProps {
   firmwareSuite?: CircuitFirmware;
-  selectedPartNames?: string[];
 }
 
 export const DEFAULT_FIRMWARE_SUITE: CircuitFirmware = {
@@ -191,38 +181,35 @@ export const FirmwareSuiteGenerator: React.FC<FirmwareSuiteGeneratorProps> = ({
   const [activeTab, setActiveTab] = useState<'pinout' | 'arduino' | 'python' | 'tester'>('pinout');
   const [copied, setCopied] = useState(false);
 
-  const getCodeText = () => {
-    if (activeTab === 'arduino') return firmwareSuite.arduinoCode;
-    if (activeTab === 'python') return firmwareSuite.pythonNasCode;
-    return firmwareSuite.nodeNasCode;
-  };
+  const getCodeText = () => (activeTab === 'arduino' ? firmwareSuite.arduinoCode : firmwareSuite.pythonNasCode);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(getCodeText());
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    if (await copyText(getCodeText())) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   return (
     <div className="w-full flex flex-col rounded-2xl bg-[#090e1f]/95 border border-amber-500/40 shadow-2xl text-slate-100 overflow-hidden backdrop-blur-md">
       {/* Header */}
-      <div className="px-4 py-3 bg-[#050811] border-b border-amber-950/80 flex items-center justify-between gap-3">
+      <div className="px-3 sm:px-4 py-3 bg-[#050811] border-b border-amber-950/80 flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center">
             <Zap className="w-4 h-4 fill-current" />
           </div>
           <div>
             <h4 className="font-mono font-bold text-xs sm:text-sm text-amber-300 uppercase tracking-wide">
-              ⚡ FIRMWARE & NAS ECOSYSTEM SCRIPT SUITE
+              EXAMPLE PROJECT: {firmwareSuite.title}
             </h4>
             <p className="text-[10px] font-mono text-slate-400">
-              ZERO-BUDGET WIRING TABLES & READY-TO-FLASH CODE
+              STARTER WIRING + CODE (NOT GENERATED FROM YOUR SCAN)
             </p>
           </div>
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800 text-xs font-mono">
+        <div className="flex flex-wrap items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800 text-xs font-mono self-start">
           <button
             onClick={() => setActiveTab('pinout')}
             className={`px-2.5 py-1 rounded-lg transition-colors ${
@@ -279,7 +266,7 @@ export const FirmwareSuiteGenerator: React.FC<FirmwareSuiteGeneratorProps> = ({
                 <tbody className="divide-y divide-slate-800/80 bg-slate-900/60">
                   {firmwareSuite.pinoutTable.map((row, idx) => (
                     <tr key={idx} className="hover:bg-slate-800/40">
-                      <td className="p-2.5 font-bold text-white whitespace-nowrap">{row.partPin}</td>
+                      <td className="p-2.5 font-bold text-white">{row.partPin}</td>
                       <td className="p-2.5 text-cyan-300 font-semibold">{row.targetConnection}</td>
                       <td className="p-2.5 text-slate-300 text-[11px] font-sans">{row.notes}</td>
                     </tr>

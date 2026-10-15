@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { HeaderTelemetry } from './components/HeaderTelemetry';
 import { CameraARCanvas } from './components/CameraARCanvas';
 import { ModeSelector } from './components/ModeSelector';
@@ -6,6 +6,7 @@ import { TelemetryDrawer } from './components/TelemetryDrawer';
 import { CravingOverrideModal } from './components/CravingOverrideModal';
 import { PartsBinDrawer } from './components/PartsBinDrawer';
 import { NASSyncDrawer } from './components/NASSyncDrawer';
+import { ScanHistoryDrawer } from './components/ScanHistoryDrawer';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
 import {
@@ -15,6 +16,9 @@ import {
   SalvagedPart,
   BenchStats,
   EcosystemStatus,
+  SampleBoard,
+  ScanHistoryEntry,
+  StillFrame,
 } from './types';
 import {
   getStoredParts,
@@ -24,319 +28,249 @@ import {
   getStoredStats,
   incrementCravingDefeated,
   getStoredSettings,
+  getVoiceMuted,
+  saveVoiceMuted,
+  getScanHistory,
+  addScanHistory,
+  deleteScanHistory,
+  clearScanHistory,
   UserSettings,
 } from './utils/storage';
 import { requestScreenWakeLock, releaseScreenWakeLock } from './utils/wakeLock';
-import {
-  startHandsFreeListening,
-  stopHandsFreeListening,
-  isSpeechRecognitionSupported,
-} from './utils/speechRecognition';
-import { speakJarvis, cancelJarvisVoice, playTacticalAudio } from './utils/audio';
-import { SAMPLE_BOARDS } from './utils/sampleBoards';
+import { startHandsFreeListening, stopHandsFreeListening, isSpeechRecognitionSupported, VoiceCommandHandler } from './utils/speechRecognition';
+import { speakJarvis, playTacticalAudio, setVoiceMuted } from './utils/audio';
+import { postJSON, ApiRequestError } from './utils/api';
+import { LoadedImage, makeThumbnail } from './utils/image';
+import { useSolderCoach } from './hooks/useSolderCoach';
+
+interface ScanOptions {
+  mode?: OperatingMode;
+  question?: string;
+  /** Show this image frozen in the viewport while/after analyzing. */
+  freeze: boolean;
+  /** Auto-watch scans are not saved to history. */
+  saveHistory?: boolean;
+}
+
+function categorize(item: DetectionItem): SalvagedPart['category'] {
+  const l = item.label.toLowerCase();
+  if (/capacitor|\bcap\b|electrolytic|\buf\b|µf/.test(l)) return 'Capacitor';
+  if (/mosfet|transistor|irf|to-220/.test(l)) return 'MOSFET';
+  if (/motor|stepper|servo|fan|vibration|actuator/.test(l)) return 'Motor';
+  if (/switch|button|tactile/.test(l)) return 'Switch';
+  if (/\bled\b/.test(l)) return 'LED';
+  if (/buzzer|piezo|speaker/.test(l)) return 'Buzzer';
+  if (/inductor|coil|choke|toroid/.test(l)) return 'Inductor';
+  if (/header|pin strip/.test(l)) return 'Header';
+  if (item.type === 'MODULE' || /module|board|sensor|lcd|display/.test(l)) return 'Module';
+  if (item.type === 'CONNECTOR' || /connector|jack|socket|usb|cable|port/.test(l)) return 'Connector';
+  if (item.type === 'IC_CHIP' || /regulator|\bic\b|chip|mcu|controller/.test(l)) return 'IC';
+  return 'Other';
+}
 
 export default function App() {
   const [activeMode, setActiveMode] = useState<OperatingMode>('HARVEST');
-
-  // CRITICAL ZERO-MOCK ENFORCEMENT:
-  // On startup with live camera, detections are strictly EMPTY until a real scan is performed!
-  const [detections, setDetections] = useState<DetectionItem[]>([]);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [still, setStill] = useState<StillFrame | null>(null);
   const [selectedDetection, setSelectedDetection] = useState<DetectionItem | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Storage states
-  const [parts, setParts] = useState<SalvagedPart[]>([]);
-  const [stats, setStats] = useState<BenchStats>(getStoredStats());
-  const [settings, setSettings] = useState<UserSettings>(getStoredSettings());
+  const [parts, setParts] = useState<SalvagedPart[]>(getStoredParts);
+  const [stats, setStats] = useState<BenchStats>(getStoredStats);
+  const [settings, setSettings] = useState<UserSettings>(getStoredSettings);
+  const [history, setHistory] = useState<ScanHistoryEntry[]>(getScanHistory);
 
-  // Hardware controls
   const [isWakeLockOn, setIsWakeLockOn] = useState(false);
-  const [isVoiceMuted, setIsVoiceMuted] = useState(false);
+  const [isVoiceMuted, setIsVoiceMutedState] = useState(getVoiceMuted);
   const [isHandsFreeActive, setIsHandsFreeActive] = useState(false);
 
-  // Auto-Watch 8s Bench Overwatch Loop
   const [isAutoWatchActive, setIsAutoWatchActive] = useState(false);
   const [autoWatchSecondsLeft, setAutoWatchSecondsLeft] = useState(8);
 
-  // Modals & Drawers
   const [isCravingModalOpen, setIsCravingModalOpen] = useState(false);
   const [isPartsBinOpen, setIsPartsBinOpen] = useState(false);
-  const [isNASSyncOpen, setIsNASSyncOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [ecosystemStatus, setEcosystemStatus] = useState<EcosystemStatus>({ connected: false, latencyMs: null, lastPing: null });
 
-  // Ecosystem bridge status
-  const [ecosystemStatus, setEcosystemStatus] = useState<EcosystemStatus | undefined>({
-    connected: false,
-    latencyMs: null,
-    lastPing: null,
-  });
+  const coach = useSolderCoach(activeMode === 'SOLDER_COACH');
 
-  const lastCapturedImageRef = useRef<string | null>(null);
-  const triggerCaptureRef = useRef<(() => void) | null>(null);
+  const liveCaptureRef = useRef<(() => LoadedImage | null) | null>(null);
+  const torchToggleRef = useRef<(() => void) | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const analyzingRef = useRef(false);
 
-  // 1. Initialize Screen Wake Lock on startup so screen never turns off while soldering
+  const detections = analysis?.detections ?? [];
+
+  // Voice mute is global (applies to every spoken line, not just scan results).
+  useEffect(() => {
+    setVoiceMuted(isVoiceMuted);
+    saveVoiceMuted(isVoiceMuted);
+  }, [isVoiceMuted]);
+
+  // Keep the screen on while working; re-acquire after the app returns to the foreground.
   useEffect(() => {
     let mounted = true;
-
-    async function initWakeLock() {
-      const acquired = await requestScreenWakeLock();
-      if (mounted) setIsWakeLockOn(acquired);
-    }
-
-    initWakeLock();
-
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible') {
-        const reacquired = await requestScreenWakeLock();
-        if (mounted) setIsWakeLockOn(reacquired);
-      }
+    const acquire = async () => {
+      const ok = await requestScreenWakeLock();
+      if (mounted) setIsWakeLockOn(ok);
     };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
+    acquire();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') acquire();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       mounted = false;
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', onVisibility);
       releaseScreenWakeLock();
     };
   }, []);
 
-  // 2. Load stored parts & stats
-  useEffect(() => {
-    setParts(getStoredParts());
-    setStats(getStoredStats());
-    setSettings(getStoredSettings());
-  }, []);
+  // --- Analysis ---
+  const runAnalysis = useCallback(
+    async (image: LoadedImage, opts: ScanOptions) => {
+      const mode = opts.mode ?? activeMode;
+      if (opts.freeze) setStill({ src: image.dataUrl, width: image.width, height: image.height });
 
-  // 3. Hands-Free Voice Command Listener
-  const handleVoiceCommand = useCallback(
-    (
-      command:
-        | 'SCAN'
-        | 'CHECK_JOINT'
-        | 'BUILD'
-        | 'CRAVING'
-        | 'LOG_PART'
-        | 'MUTE'
-        | 'TORCH'
-        | 'HEAT'
-        | 'DOCTOR'
-        | 'AUTO_WATCH',
-      rawPhrase: string
-    ) => {
-      playTacticalAudio.chirp();
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      analyzingRef.current = true;
+      setIsAnalyzing(true);
+      setErrorMessage(null);
+      setSelectedDetection(null);
+      if (mode === 'CRAVING_OVERRIDE') setIsCravingModalOpen(true);
 
-      switch (command) {
-        case 'SCAN':
-          setActiveMode('HARVEST');
-          if (lastCapturedImageRef.current) {
-            handleAnalyzeFrame(lastCapturedImageRef.current, 'HARVEST');
-          } else {
-            speakJarvis('Initiating motherboard harvest scan, sir.');
-          }
-          break;
+      try {
+        const data = await postJSON<AnalysisResult>(
+          '/api/analyze',
+          {
+            imageBase64: image.dataUrl,
+            mode,
+            question: opts.question,
+            currency: settings.currency,
+            partsInventory: parts.map(p => ({ name: p.name })),
+          },
+          controller.signal
+        );
+        if (controller.signal.aborted) return;
 
-        case 'CHECK_JOINT':
-          setActiveMode('SOLDER_COACH');
-          if (lastCapturedImageRef.current) {
-            handleAnalyzeFrame(lastCapturedImageRef.current, 'SOLDER_COACH');
-          } else {
-            speakJarvis('Solder joint coach engaged. Hold your iron steady at the work.');
-          }
-          break;
+        setAnalysis(data);
+        if (data.safety_hazard_detected) playTacticalAudio.alert();
+        else playTacticalAudio.success();
+        speakJarvis(opts.question && data.answer ? data.answer : data.spoken_telemetry);
 
-        case 'HEAT':
-          setActiveMode('SOLDER_COACH');
-          playTacticalAudio.solderSecond1();
-          speakJarvis('Three-second soldering countdown started. Heat pad and pin.');
-          break;
-
-        case 'BUILD':
-          setActiveMode('BUILD_ADVISOR');
-          if (lastCapturedImageRef.current) {
-            handleAnalyzeFrame(lastCapturedImageRef.current, 'BUILD_ADVISOR');
-          } else {
-            speakJarvis('Scanning parts bin for zero-budget circuits and firmware.');
-          }
-          break;
-
-        case 'DOCTOR':
-          setActiveMode('DEVICE_DOCTOR');
-          speakJarvis('Dead Device Doctor triage active. Commencing non-destructive diagnostics.');
-          break;
-
-        case 'AUTO_WATCH':
-          setIsAutoWatchActive(prev => {
-            const next = !prev;
-            if (next) {
-              speakJarvis('Continuous bench overwatch activated. Scanning every eight seconds.');
-            } else {
-              speakJarvis('Auto-watch disengaged.');
-            }
-            return next;
-          });
-          break;
-
-        case 'CRAVING':
-          setActiveMode('CRAVING_OVERRIDE');
-          setIsCravingModalOpen(true);
-          break;
-
-        case 'LOG_PART':
-          if (selectedDetection) {
-            handleLogPart(selectedDetection);
-            speakJarvis(`Logged ${selectedDetection.label} to your parts bin.`);
-          } else if (detections.length > 0) {
-            handleLogPart(detections[0]);
-            speakJarvis(`Logged ${detections[0].label} to your parts bin.`);
-          }
-          break;
-
-        case 'MUTE':
-          cancelJarvisVoice();
-          setIsVoiceMuted(prev => !prev);
-          break;
-
-        default:
-          break;
+        if (opts.saveHistory !== false) {
+          const thumbnail = await makeThumbnail(image.dataUrl, 640);
+          setHistory(
+            addScanHistory({
+              id: `scan-${Date.now()}`,
+              timestamp: new Date().toISOString(),
+              mode,
+              question: opts.question,
+              thumbnail,
+              analysis: data,
+            })
+          );
+        }
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        const message = err instanceof Error ? err.message : 'Scan failed.';
+        setErrorMessage(message);
+        playTacticalAudio.alert();
+        if (err instanceof ApiRequestError && err.needsAccessKey) setIsSettingsOpen(true);
+      } finally {
+        if (abortRef.current === controller) {
+          analyzingRef.current = false;
+          setIsAnalyzing(false);
+        }
       }
     },
-    [selectedDetection, detections]
+    [activeMode, parts, settings.currency]
   );
 
-  const toggleHandsFree = () => {
-    if (isHandsFreeActive) {
-      stopHandsFreeListening();
-      setIsHandsFreeActive(false);
-      speakJarvis('Voice mic standby.');
-    } else {
-      if (!isSpeechRecognitionSupported()) {
-        alert('Voice speech recognition is not supported in this browser environment. You can use tactical buttons!');
-        return;
-      }
-      startHandsFreeListening(handleVoiceCommand, active => setIsHandsFreeActive(active));
-      setIsHandsFreeActive(true);
-      speakJarvis('Hands-free microphone online. Say Jarvis scan, Jarvis heat, or Jarvis doctor.');
-    }
+  // Always call the latest runAnalysis from timers / voice callbacks.
+  const runAnalysisRef = useRef(runAnalysis);
+  runAnalysisRef.current = runAnalysis;
+
+  const currentImage = useCallback((): LoadedImage | null => {
+    if (still) return { dataUrl: still.src, width: still.width, height: still.height };
+    return liveCaptureRef.current?.() ?? null;
+  }, [still]);
+
+  const handleScanImage = (image: LoadedImage, freeze: boolean) => {
+    runAnalysis(image, { freeze });
   };
 
-  const toggleVoiceMute = () => {
-    if (!isVoiceMuted) {
-      cancelJarvisVoice();
-      setIsVoiceMuted(true);
-    } else {
-      setIsVoiceMuted(false);
-      speakJarvis('Voice telemetry unmuted.');
-    }
-  };
-
-  // 4. Analyze Frame with Gemini Vision API
-  const handleAnalyzeFrame = async (base64Image: string, modeOverride?: OperatingMode) => {
-    lastCapturedImageRef.current = base64Image;
-    const mode = modeOverride || activeMode;
-    setIsAnalyzing(true);
-    setSelectedDetection(null);
-
-    if (mode === 'CRAVING_OVERRIDE') {
-      setIsCravingModalOpen(true);
-    }
-
-    try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: base64Image,
-          mode,
-          partsInventory: parts,
-        }),
-      });
-
-      const data: AnalysisResult = await response.json();
-
-      if (data && data.spoken_telemetry) {
-        setAnalysis(data);
-        setDetections(data.detections || []);
-
-        if (data.safety_hazard_detected) {
-          playTacticalAudio.alert();
-        } else {
-          playTacticalAudio.chirp();
-        }
-
-        if (!isVoiceMuted) {
-          speakJarvis(data.spoken_telemetry);
-        }
-      }
-    } catch (err) {
-      console.warn('Analysis network issue, falling back to local calibration:', err);
-      const fallbackBoard =
-        SAMPLE_BOARDS.find(b =>
-          mode === 'SOLDER_COACH' ? b.id === 'solder-strip' : b.id === 'router-pcb'
-        ) || SAMPLE_BOARDS[0];
-
-      setAnalysis(fallbackBoard.mockAnalysis);
-      setDetections(fallbackBoard.mockAnalysis.detections);
-
-      if (!isVoiceMuted) {
-        speakJarvis(fallbackBoard.mockAnalysis.spoken_telemetry);
-      }
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  // Auto-Watch 8-Second Loop
-  useEffect(() => {
-    if (!isAutoWatchActive) {
-      setAutoWatchSecondsLeft(8);
+  const handleAsk = (question: string) => {
+    const image = currentImage();
+    if (!image) {
+      setErrorMessage('Point the live camera at something or take a PHOTO first, then ask your question.');
       return;
     }
-
-    const interval = setInterval(() => {
-      setAutoWatchSecondsLeft(prev => {
-        if (prev <= 1) {
-          // Trigger frame capture if image is available
-          if (lastCapturedImageRef.current && !isAnalyzing) {
-            handleAnalyzeFrame(lastCapturedImageRef.current);
-          }
-          return 8;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isAutoWatchActive, isAnalyzing]);
-
-  // Clear detections on camera switch
-  const handleClearDetections = () => {
-    setDetections([]);
-    setSelectedDetection(null);
+    runAnalysis(image, { question, freeze: true });
   };
 
-  // 5. Parts Bin Management
+  const handleLoadDemoBoard = (board: SampleBoard) => {
+    abortRef.current?.abort();
+    setIsAutoWatchActive(false);
+    setErrorMessage(null);
+    setSelectedDetection(null);
+    setAnalysis({ ...board.mockAnalysis, object_identified: `${board.title} (demo)`, isDemo: true });
+  };
+
+  const handleStillChange = (next: StillFrame | null) => {
+    setStill(next);
+    if (!next) {
+      setAnalysis(null);
+      setSelectedDetection(null);
+    }
+  };
+
+  // --- Auto-watch: rescan a fresh live frame every N seconds ---
+  useEffect(() => {
+    if (!isAutoWatchActive) {
+      setAutoWatchSecondsLeft(settings.autoWatchIntervalSeconds);
+      return;
+    }
+    setStill(null);
+    let remaining = settings.autoWatchIntervalSeconds;
+    setAutoWatchSecondsLeft(remaining);
+    const interval = setInterval(() => {
+      if (analyzingRef.current) return; // wait for the in-flight scan
+      remaining -= 1;
+      if (remaining <= 0) {
+        remaining = settings.autoWatchIntervalSeconds;
+        const frame = liveCaptureRef.current?.();
+        if (frame) runAnalysisRef.current(frame, { freeze: false, saveHistory: false });
+      }
+      setAutoWatchSecondsLeft(remaining);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isAutoWatchActive, settings.autoWatchIntervalSeconds]);
+
+  const toggleAutoWatch = () => {
+    setIsAutoWatchActive(prev => {
+      speakJarvis(prev ? 'Auto-watch off.' : `Auto-watch on. Rescanning every ${settings.autoWatchIntervalSeconds} seconds.`);
+      return !prev;
+    });
+  };
+
+  // --- Parts bin ---
   const handleLogPart = (item: DetectionItem) => {
     playTacticalAudio.chirp();
-    let cat: SalvagedPart['category'] = 'Other';
-    if (item.label.includes('Capacitor')) cat = 'Capacitor';
-    else if (item.label.includes('Switch') || item.label.includes('Button')) cat = 'Switch';
-    else if (item.label.includes('LED')) cat = 'LED';
-    else if (item.label.includes('Regulator') || item.type === 'IC_CHIP') cat = 'IC';
-    else if (item.label.includes('MOSFET')) cat = 'MOSFET';
-    else if (item.label.includes('Buzzer')) cat = 'Buzzer';
-    else if (item.label.includes('Inductor')) cat = 'Inductor';
-    else if (item.label.includes('Header') || item.type === 'CONNECTOR') cat = 'Header';
-
     const newPart = addStoredPart({
       name: item.label,
-      category: cat,
-      testedWorking: true,
+      category: categorize(item),
+      testedWorking: false,
+      partNumber: item.part_number || undefined,
+      estValue: item.est_value,
       pinout: item.pinout_notes,
       reuseIdeas: item.reuse_ideas,
-      sourceBoard: 'Camera Harvest',
+      sourceBoard: analysis?.object_identified || 'Camera scan',
     });
-
     setParts(prev => [newPart, ...prev]);
     setStats(getStoredStats());
   };
@@ -354,19 +288,12 @@ export default function App() {
 
   const handleTogglePartTested = (id: string) => {
     togglePartTested(id);
-    setParts(prev =>
-      prev.map(p => (p.id === id ? { ...p, testedWorking: !p.testedWorking } : p))
-    );
+    setParts(prev => prev.map(p => (p.id === id ? { ...p, testedWorking: !p.testedWorking } : p)));
   };
 
-  // 6. Craving Override Mission Completed
-  const handleCravingCompleted = () => {
-    const updatedStats = incrementCravingDefeated();
-    setStats(updatedStats);
-  };
-
-  // 7. Select Mode
+  // --- Modes ---
   const handleSelectMode = (mode: OperatingMode) => {
+    if (mode === activeMode && mode !== 'CRAVING_OVERRIDE') return;
     setActiveMode(mode);
     playTacticalAudio.chirp();
 
@@ -374,116 +301,175 @@ export default function App() {
       setIsCravingModalOpen(true);
       return;
     }
+    // Re-run the current photo through the new mode (demo boards stay local).
+    if (still && !still.demoBoardId && !isAutoWatchActive) {
+      runAnalysis({ dataUrl: still.src, width: still.width, height: still.height }, { mode, freeze: true });
+    }
+  };
 
-    if (lastCapturedImageRef.current) {
-      handleAnalyzeFrame(lastCapturedImageRef.current, mode);
-    } else {
-      if (mode === 'DEVICE_DOCTOR') {
-        speakJarvis('Dead Device Doctor triage active. Inspecting non-destructive test points.');
+  // --- History ---
+  const handleOpenHistory = async (entry: ScanHistoryEntry) => {
+    abortRef.current?.abort();
+    setIsAutoWatchActive(false);
+    setIsHistoryOpen(false);
+    setActiveMode(entry.mode);
+    setAnalysis(entry.analysis);
+    setSelectedDetection(null);
+    setErrorMessage(null);
+    if (entry.thumbnail) {
+      const img = new Image();
+      img.onload = () => setStill({ src: entry.thumbnail, width: img.naturalWidth, height: img.naturalHeight });
+      img.src = entry.thumbnail;
+    }
+  };
+
+  // --- Voice ---
+  const handleVoiceCommand: VoiceCommandHandler = command => {
+    playTacticalAudio.chirp();
+    const scanIn = (mode: OperatingMode, fallback: string) => {
+      setActiveMode(mode);
+      const frame = liveCaptureRef.current?.() ?? currentImage();
+      if (frame) runAnalysis(frame, { mode, freeze: true });
+      else speakJarvis(fallback);
+    };
+
+    switch (command) {
+      case 'SCAN':
+        scanIn('HARVEST', 'Point the camera at something first.');
+        break;
+      case 'CHECK_JOINT':
+        scanIn('SOLDER_COACH', 'Solder coach on. Point the camera at the joint.');
+        break;
+      case 'BUILD':
+        scanIn('BUILD_ADVISOR', 'Build advisor on.');
+        break;
+      case 'DOCTOR':
+        scanIn('DEVICE_DOCTOR', 'Device doctor on. Point the camera at the device.');
+        break;
+      case 'HEAT':
+        setActiveMode('SOLDER_COACH');
+        coach.trigger3SecondRule();
+        break;
+      case 'AUTO_WATCH':
+        toggleAutoWatch();
+        break;
+      case 'CRAVING':
+        setActiveMode('CRAVING_OVERRIDE');
+        setIsCravingModalOpen(true);
+        break;
+      case 'LOG_PART': {
+        const target = selectedDetection ?? detections.find(d => d.type !== 'HAZARD');
+        if (target) {
+          handleLogPart(target);
+          speakJarvis(`Logged ${target.label}.`);
+        } else {
+          speakJarvis('Nothing to log yet. Scan first.');
+        }
+        break;
       }
+      case 'MUTE':
+        setIsVoiceMutedState(m => !m);
+        break;
+      case 'TORCH':
+        torchToggleRef.current?.();
+        break;
     }
+  };
+  const voiceHandlerRef = useRef(handleVoiceCommand);
+  voiceHandlerRef.current = handleVoiceCommand;
+
+  const toggleHandsFree = () => {
+    if (isHandsFreeActive) {
+      stopHandsFreeListening();
+      setIsHandsFreeActive(false);
+      speakJarvis('Voice commands off.');
+      return;
+    }
+    if (!isSpeechRecognitionSupported()) {
+      setErrorMessage('Voice commands are not supported in this browser. Chrome on Android works best.');
+      return;
+    }
+    startHandsFreeListening((cmd, phrase) => voiceHandlerRef.current(cmd, phrase), active => setIsHandsFreeActive(active));
+    setIsHandsFreeActive(true);
+    speakJarvis('Voice commands on. Say scan, heat, log part, or torch.');
   };
 
-  // Highlight step target box in Device Doctor mode
-  const handleHighlightStepBox = (box?: [number, number, number, number]) => {
-    if (box) {
-      const mockItem: DetectionItem = {
-        box_2d: box,
-        label: 'Triage Inspection Target',
-        type: 'CONNECTOR',
-        desolder_technique: 'Non-destructive probe with wooden pick or tweezers',
-        pinout_notes: 'Inspect for lint or corrosion',
-        reuse_ideas: 'Diagnostic checkpoint',
-      };
-      setSelectedDetection(mockItem);
-    } else {
-      setSelectedDetection(null);
-    }
-  };
+  useEffect(() => () => stopHandsFreeListening(), []);
 
   return (
-    <div className="min-h-screen bg-[#050811] text-slate-100 flex flex-col font-sans hud-grid select-none">
+    <div className="min-h-dvh bg-[#050811] text-slate-100 flex flex-col font-sans hud-grid">
       <OfflineIndicator />
 
-      {/* Top Telemetry Contract */}
       <HeaderTelemetry
         stats={stats}
+        partsCount={parts.length}
+        historyCount={history.length}
         isWakeLockOn={isWakeLockOn}
         isVoiceMuted={isVoiceMuted}
-        onToggleVoiceMute={toggleVoiceMute}
+        onToggleVoiceMute={() => setIsVoiceMutedState(m => !m)}
         isHandsFreeActive={isHandsFreeActive}
         onToggleHandsFree={toggleHandsFree}
         onOpenPartsBin={() => setIsPartsBinOpen(true)}
-        onOpenNASSync={() => setIsNASSyncOpen(true)}
+        onOpenHistory={() => setIsHistoryOpen(true)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
         ecosystemStatus={ecosystemStatus}
       />
 
-      {/* Main Workbench Viewport */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-2 sm:p-4 flex flex-col gap-3">
-        {/* Five Mode Selector Grid */}
-        <ModeSelector
-          activeMode={activeMode}
-          onSelectMode={handleSelectMode}
-          isAnalyzing={isAnalyzing}
-        />
+      <main className="flex-1 max-w-7xl w-full mx-auto p-2 sm:p-4 flex flex-col gap-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <ModeSelector activeMode={activeMode} onSelectMode={handleSelectMode} isAnalyzing={isAnalyzing} />
 
-        {/* Dynamic Dual-Column Split */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
-          {/* Left Column: Live Optics & Interactive AR Bounding Box Canvas */}
-          <div className="lg:col-span-7 flex flex-col min-h-[400px] sm:min-h-[480px]">
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3 items-start">
+          <div className="lg:col-span-7 flex flex-col lg:sticky lg:top-20">
             <CameraARCanvas
               detections={detections}
               selectedDetection={selectedDetection}
-              onSelectDetection={det => {
-                setSelectedDetection(det);
-                if (det && !isVoiceMuted) {
-                  speakJarvis(`${det.label}. Pinout note: ${det.pinout_notes}.`);
-                }
+              onSelectDetection={setSelectedDetection}
+              still={still}
+              onStillChange={handleStillChange}
+              onScanImage={handleScanImage}
+              onLoadDemoBoard={handleLoadDemoBoard}
+              onClearDetections={() => {
+                setAnalysis(null);
+                setSelectedDetection(null);
               }}
-              onCaptureFrame={base64 => handleAnalyzeFrame(base64)}
-              onClearDetections={handleClearDetections}
               isAnalyzing={isAnalyzing}
               activeMode={activeMode}
               onLogHarvestedPart={handleLogPart}
               isAutoWatchActive={isAutoWatchActive}
-              onToggleAutoWatch={() => {
-                setIsAutoWatchActive(prev => {
-                  const next = !prev;
-                  if (next) {
-                    speakJarvis('Continuous bench overwatch activated. Monitoring PCB every eight seconds.');
-                  } else {
-                    speakJarvis('Auto-watch disengaged.');
-                  }
-                  return next;
-                });
-              }}
+              onToggleAutoWatch={toggleAutoWatch}
               autoWatchSecondsLeft={autoWatchSecondsLeft}
+              coach={coach}
+              currency={settings.currency}
+              liveCaptureRef={liveCaptureRef}
+              torchToggleRef={torchToggleRef}
             />
           </div>
 
-          {/* Right Column: Telemetry, Solder Rule Pacer, Firmware Suite, or Device Doctor */}
           <div className="lg:col-span-5 flex flex-col">
             <TelemetryDrawer
               analysis={analysis}
               activeMode={activeMode}
               onLogHarvestedPart={handleLogPart}
-              onSelectDetection={det => setSelectedDetection(det)}
+              onSelectDetection={setSelectedDetection}
               selectedDetection={selectedDetection}
-              onHighlightStepBox={handleHighlightStepBox}
+              coach={coach}
+              currency={settings.currency}
+              onAsk={handleAsk}
+              isAnalyzing={isAnalyzing}
+              errorMessage={errorMessage}
+              onDismissError={() => setErrorMessage(null)}
             />
           </div>
         </div>
       </main>
 
-      {/* Emergency 3-Minute Craving Override Protocol Modal */}
       <CravingOverrideModal
         isOpen={isCravingModalOpen}
         onClose={() => setIsCravingModalOpen(false)}
-        onComplete={handleCravingCompleted}
+        onComplete={() => setStats(incrementCravingDefeated())}
         targetTask={analysis?.challenge_task}
       />
 
-      {/* Salvaged Parts Bin Drawer */}
       <PartsBinDrawer
         isOpen={isPartsBinOpen}
         onClose={() => setIsPartsBinOpen(false)}
@@ -491,18 +477,32 @@ export default function App() {
         onAddPart={handleAddManualPart}
         onDeletePart={handleDeletePart}
         onToggleTested={handleTogglePartTested}
+        currency={settings.currency}
       />
 
-      {/* Second Brain & Home NAS Bridge Drawer */}
-      <NASSyncDrawer
-        isOpen={isNASSyncOpen}
-        onClose={() => setIsNASSyncOpen(false)}
-        settings={settings}
-        onUpdateSettings={setSettings}
-        parts={parts}
-        stats={stats}
-        onEcosystemStatusChange={setEcosystemStatus}
+      <ScanHistoryDrawer
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        history={history}
+        onOpenEntry={handleOpenHistory}
+        onDeleteEntry={id => setHistory(deleteScanHistory(id))}
+        onClearAll={() => {
+          clearScanHistory();
+          setHistory([]);
+        }}
       />
+
+      {isSettingsOpen && (
+        <NASSyncDrawer
+          isOpen
+          onClose={() => setIsSettingsOpen(false)}
+          settings={settings}
+          onUpdateSettings={setSettings}
+          parts={parts}
+          stats={stats}
+          onEcosystemStatusChange={setEcosystemStatus}
+        />
+      )}
     </div>
   );
 }

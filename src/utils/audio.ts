@@ -1,3 +1,6 @@
+import { TextToSpeech } from '@capacitor-community/text-to-speech';
+import { isNativeApp } from './platform';
+
 let audioCtx: AudioContext | null = null;
 
 function getAudioContext(): AudioContext | null {
@@ -9,7 +12,7 @@ function getAudioContext(): AudioContext | null {
     }
   }
   if (audioCtx && audioCtx.state === 'suspended') {
-    audioCtx.resume();
+    audioCtx.resume().catch(() => {});
   }
   return audioCtx;
 }
@@ -236,6 +239,13 @@ export const playTacticalAudio = {
 
 // Speech Synthesis (Jarvis Voice)
 let preferredVoice: SpeechSynthesisVoice | null = null;
+let voiceMuted = false;
+
+/** Global voice mute: every speakJarvis call respects it. */
+export function setVoiceMuted(muted: boolean) {
+  voiceMuted = muted;
+  if (muted) cancelJarvisVoice();
+}
 
 function loadPreferredVoice() {
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
@@ -251,9 +261,7 @@ function loadPreferredVoice() {
 
 if (typeof window !== 'undefined' && window.speechSynthesis) {
   loadPreferredVoice();
-  if (window.speechSynthesis.onvoiceschanged !== undefined) {
-    window.speechSynthesis.onvoiceschanged = loadPreferredVoice;
-  }
+  window.speechSynthesis.addEventListener?.('voiceschanged', loadPreferredVoice);
 }
 
 export function speakJarvis(
@@ -265,6 +273,23 @@ export function speakJarvis(
     pitch?: number;
   }
 ) {
+  if (voiceMuted) return;
+
+  // Android WebView has no usable speechSynthesis, so the APK uses native TTS.
+  if (isNativeApp()) {
+    const clean = text?.trim();
+    TextToSpeech.stop()
+      .catch(() => {})
+      .then(() => {
+        if (!clean) return;
+        options?.onStart?.();
+        return TextToSpeech.speak({ text: clean, lang: 'en-GB', rate: options?.rate ?? 1.05, pitch: options?.pitch ?? 0.95 });
+      })
+      .catch(() => {})
+      .finally(() => options?.onEnd?.());
+    return;
+  }
+
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
 
   // Cancel prior utterances
@@ -289,6 +314,10 @@ export function speakJarvis(
 }
 
 export function cancelJarvisVoice() {
+  if (isNativeApp()) {
+    TextToSpeech.stop().catch(() => {});
+    return;
+  }
   if (typeof window !== 'undefined' && window.speechSynthesis) {
     window.speechSynthesis.cancel();
   }

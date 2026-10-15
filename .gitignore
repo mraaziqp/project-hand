@@ -6,3 +6,11 @@ coverage/
 *.log
 .env*
 !.env.example
+!.env.native
+
+# Android signing secrets - never commit
+*.jks
+*.keystore
+android/keystore.properties
+release/
+.vercel

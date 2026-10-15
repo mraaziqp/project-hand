@@ -1,0 +1,7 @@
+android/
+release/
+assets/
+dist/
+node_modules/
+.env
+.env.local

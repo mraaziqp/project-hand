@@ -3,24 +3,56 @@
 @theme {
   --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
-  --font-hud: 'Chakra Petch', 'JetBrains Mono', monospace;
   --color-hud-bg: #050811;
   --color-hud-cyan: #22d3ee;
   --color-hud-emerald: #34d399;
   --color-hud-amber: #fbbf24;
   --color-hud-crimson: #f43f5e;
+  --breakpoint-xs: 25rem;
 }
 
 :root {
   color-scheme: dark;
 }
 
+html,
 body {
   background-color: #050811;
   color: #f1f5f9;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+/* HUD chrome is not selectable, but results text is (see .select-text). */
+button,
+summary {
   user-select: none;
+  -webkit-user-select: none;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes scan-line {
+  0% { top: 0%; }
+  50% { top: calc(100% - 4px); }
+  100% { top: 0%; }
+}
+.scan-line {
+  animation: scan-line 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-line,
+  .voice-bar,
+  .radar-sweep {
+    animation: none;
+  }
 }
 
 /* Custom scrollbars for tactical UI */

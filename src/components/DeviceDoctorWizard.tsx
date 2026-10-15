@@ -1,15 +1,5 @@
 import React, { useState } from 'react';
-import {
-  Stethoscope,
-  CheckCircle2,
-  AlertTriangle,
-  ChevronRight,
-  Sparkles,
-  Zap,
-  RotateCcw,
-  ShieldCheck,
-  Check,
-} from 'lucide-react';
+import { Stethoscope, CheckCircle2, AlertTriangle, Check } from 'lucide-react';
 import { DeviceDoctorStep } from '../types';
 import { playTacticalAudio, speakJarvis } from '../utils/audio';
 
@@ -21,7 +11,6 @@ const TRIAGE_STEPS: DeviceDoctorStep[] = [
       'Gently insert a sharpened non-conductive wooden toothpick or plastic pick into the USB-C / Lightning port. Scrape out compressed pocket lint preventing charging contacts from seating.',
     caution: 'NEVER use metal tweezers or safety pins in a live port—risk of shorting 5V VBUS to GND!',
     tool: 'Wooden toothpick or shaved plastic zip-tie',
-    box_2d: [800, 420, 950, 580],
   },
   {
     id: 'step-battery-conn',
@@ -30,7 +19,6 @@ const TRIAGE_STEPS: DeviceDoctorStep[] = [
       'Inspect the main battery connector. Unseat the snap connector with a plastic spudger, inspect gold pins for white oxidation or debris, and firmly re-click it into place.',
     caution: 'If battery pouch feels squishy or swollen like a pillow, STOP immediately. Do not puncture.',
     tool: 'Plastic guitar pick or nylon spudger',
-    box_2d: [300, 100, 700, 350],
   },
   {
     id: 'step-ribbon',
@@ -39,7 +27,6 @@ const TRIAGE_STEPS: DeviceDoctorStep[] = [
       'Disconnect and reseat the display ribbon and sub-board interconnect cables. Drops frequently disconnect the display while the logic board is still fully functional.',
     caution: 'Check zero-insertion-force (ZIF) lock flaps before pulling flex cables.',
     tool: 'Plastic spudger + isopropyl alcohol (99%)',
-    box_2d: [200, 400, 500, 700],
   },
   {
     id: 'step-power-pad',
@@ -48,7 +35,6 @@ const TRIAGE_STEPS: DeviceDoctorStep[] = [
       'Dead power buttons are the #1 false-flag dead motherboard cause. Bridge the two PWR_KEY test pads on the board using insulated tweezers for 2 seconds to simulate power button press.',
     caution: 'Only bridge verified PWR pads or switch legs, do not bridge adjacent decoupling caps.',
     tool: 'Curved ESD-safe tweezers or stripped jumper wire',
-    box_2d: [520, 720, 680, 880],
   },
   {
     id: 'step-thermal',
@@ -57,15 +43,10 @@ const TRIAGE_STEPS: DeviceDoctorStep[] = [
       'Coat the board with 99% isopropyl alcohol while injecting low voltage (3.8V-4.2V current-limited to 1A). The shorted ceramic capacitor will rapidly evaporate alcohol first.',
     caution: 'No open flames or hot iron tips nearby while alcohol vapor is present.',
     tool: '99% Isopropyl Alcohol + 5V USB / bench supply',
-    box_2d: [150, 200, 450, 550],
   },
 ];
 
-interface DeviceDoctorWizardProps {
-  onHighlightStepBox?: (box?: [number, number, number, number]) => void;
-}
-
-export const DeviceDoctorWizard: React.FC<DeviceDoctorWizardProps> = ({ onHighlightStepBox }) => {
+export const DeviceDoctorWizard: React.FC = () => {
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>({});
 
@@ -75,9 +56,6 @@ export const DeviceDoctorWizard: React.FC<DeviceDoctorWizardProps> = ({ onHighli
     setCurrentStepIdx(idx);
     playTacticalAudio.chirp();
     const step = TRIAGE_STEPS[idx];
-    if (onHighlightStepBox) {
-      onHighlightStepBox(step.box_2d);
-    }
     speakJarvis(`Triage Stage ${idx + 1}: ${step.title}. ${step.instruction}`);
   };
 
@@ -89,22 +67,22 @@ export const DeviceDoctorWizard: React.FC<DeviceDoctorWizardProps> = ({ onHighli
   return (
     <div className="w-full flex flex-col gap-3 p-4 rounded-2xl bg-[#090e1f]/95 border border-cyan-500/40 shadow-2xl text-slate-100 backdrop-blur-md">
       {/* Header */}
-      <div className="flex items-center justify-between pb-3 border-b border-cyan-950/70">
+      <div className="flex items-start justify-between gap-2 pb-3 border-b border-cyan-950/70">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 flex items-center justify-center">
             <Stethoscope className="w-4 h-4" />
           </div>
           <div>
             <h3 className="font-mono font-bold text-xs sm:text-sm text-cyan-300 uppercase tracking-wide">
-              DEAD DEVICE DOCTOR // NON-DESTRUCTIVE TRIAGE
+              DEVICE DOCTOR CHECKLIST
             </h3>
             <p className="text-[10px] font-mono text-slate-400">
-              SOLVE 85% OF DEAD PHONES & MOTHERBOARDS BEFORE DESOLDERING
+              NON-DESTRUCTIVE CHECKS BEFORE YOU DESOLDER ANYTHING
             </p>
           </div>
         </div>
 
-        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800">
+        <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800">
           STAGE {currentStepIdx + 1} OF {TRIAGE_STEPS.length}
         </span>
       </div>
@@ -140,7 +118,7 @@ export const DeviceDoctorWizard: React.FC<DeviceDoctorWizardProps> = ({ onHighli
 
       {/* Active Stage Details Card */}
       <div className="p-4 rounded-xl bg-[#050811] border border-cyan-900/60 space-y-3">
-        <div className="flex items-start justify-between gap-2">
+        <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <span className="text-[10px] font-mono font-bold text-cyan-400 uppercase">
               CURRENT TRIAGE PROCEDURE
@@ -168,9 +146,9 @@ export const DeviceDoctorWizard: React.FC<DeviceDoctorWizardProps> = ({ onHighli
         </p>
 
         {/* Recommended Non-Conductive Tool */}
-        <div className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-[11px] font-mono flex items-center gap-2">
+        <div className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-[11px] font-mono flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="text-cyan-400 font-bold shrink-0">RECOMMENDED TOOL:</span>
-          <span className="text-slate-300 truncate">{currentStep.tool}</span>
+          <span className="text-slate-300">{currentStep.tool}</span>
         </div>
 
         {/* Hazard Caution Callout */}
@@ -184,9 +162,9 @@ export const DeviceDoctorWizard: React.FC<DeviceDoctorWizardProps> = ({ onHighli
           <button
             onClick={() => handleSelectStep(Math.max(0, currentStepIdx - 1))}
             disabled={currentStepIdx === 0}
-            className="px-3 py-1.5 rounded-lg text-xs font-mono bg-slate-900 border border-slate-800 disabled:opacity-40 text-slate-300"
+            className="min-h-[40px] px-3 rounded-lg text-xs font-mono bg-slate-900 border border-slate-800 disabled:opacity-40 text-slate-300"
           >
-            ← Previous Stage
+            ← Prev
           </button>
 
           <button
@@ -196,9 +174,9 @@ export const DeviceDoctorWizard: React.FC<DeviceDoctorWizardProps> = ({ onHighli
               }
             }}
             disabled={currentStepIdx === TRIAGE_STEPS.length - 1}
-            className="px-4 py-1.5 rounded-lg text-xs font-mono font-bold bg-cyan-500 hover:bg-cyan-400 text-slate-950 uppercase disabled:opacity-40"
+            className="min-h-[40px] px-4 rounded-lg text-xs font-mono font-bold bg-cyan-500 hover:bg-cyan-400 text-slate-950 uppercase disabled:opacity-40"
           >
-            Next Triage Stage →
+            Next →
           </button>
         </div>
       </div>

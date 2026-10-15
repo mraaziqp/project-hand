@@ -1,29 +1,23 @@
 import React, { useState } from 'react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
-import { Download, Share2, X, CheckCircle2 } from 'lucide-react';
+import { Download, Share2, X } from 'lucide-react';
+import { isNativeApp } from '../utils/platform';
 
 export const PWAInstallButton: React.FC = () => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
 
-  if (isInstalled) {
-    return (
-      <div className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono text-emerald-400 border border-emerald-500/30 rounded bg-emerald-950/40">
-        <CheckCircle2 className="w-3.5 h-3.5" />
-        <span className="hidden sm:inline">PWA INSTALLED</span>
-      </div>
-    );
-  }
+  if (isInstalled || isNativeApp()) return null;
 
   if (isInstallable) {
     return (
       <button
         onClick={install}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-400/50 hover:bg-cyan-500/30 text-xs font-mono font-semibold transition-colors active:scale-95"
-        title="Install JARVIS BENCH-OS to Home Screen"
+        className="min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-400/50 text-xs font-mono font-semibold active:scale-95"
+        title="Install BENCH-OS to your home screen"
       >
-        <Download className="w-3.5 h-3.5" />
-        <span>INSTALL HUD</span>
+        <Download className="w-4 h-4" />
+        <span className="hidden md:inline">INSTALL</span>
       </button>
     );
   }
@@ -33,10 +27,11 @@ export const PWAInstallButton: React.FC = () => {
       <>
         <button
           onClick={() => setShowIOSGuide(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-400/50 hover:bg-cyan-500/30 text-xs font-mono font-semibold transition-colors active:scale-95"
+          className="min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-400/50 text-xs font-mono font-semibold active:scale-95"
+          title="Install on iPhone"
         >
-          <Share2 className="w-3.5 h-3.5" />
-          <span>INSTALL iOS</span>
+          <Share2 className="w-4 h-4" />
+          <span className="hidden md:inline">INSTALL</span>
         </button>
 
         {showIOSGuide && (
