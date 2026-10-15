@@ -262,6 +262,7 @@ export const CameraARCanvas: React.FC<CameraARCanvasProps> = ({
 
     detections.forEach((det, index) => {
       const [ymin, xmin, ymax, xmax] = det.box_2d;
+      if (ymax <= ymin || xmax <= xmin) return; // part listed without a reliable box
       const x = rect.x + (xmin / 1000) * rect.w;
       const y = rect.y + (ymin / 1000) * rect.h;
       const w = ((xmax - xmin) / 1000) * rect.w;
@@ -328,6 +329,7 @@ export const CameraARCanvas: React.FC<CameraARCanvasProps> = ({
     const hits = detections
       .filter(det => {
         const [ymin, xmin, ymax, xmax] = det.box_2d;
+        if (ymax <= ymin || xmax <= xmin) return false;
         return normX >= xmin && normX <= xmax && normY >= ymin && normY <= ymax;
       })
       .sort((a, b) => (a.box_2d[2] - a.box_2d[0]) * (a.box_2d[3] - a.box_2d[1]) - (b.box_2d[2] - b.box_2d[0]) * (b.box_2d[3] - b.box_2d[1]));

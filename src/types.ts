@@ -32,20 +32,6 @@ export interface ShoppingItem {
   priority?: 'MUST' | 'NICE';
 }
 
-export interface CircuitFirmware {
-  title: string;
-  description: string;
-  arduinoCode: string;
-  pythonNasCode: string;
-  nodeNasCode: string;
-  pinoutTable: {
-    partPin: string;
-    targetConnection: string;
-    notes: string;
-  }[];
-  continuityTestGuide: string[];
-}
-
 export interface AnalysisResult {
   object_identified?: string;
   spoken_telemetry: string;
@@ -57,6 +43,7 @@ export interface AnalysisResult {
   detections: DetectionItem[];
   shopping_list?: ShoppingItem[];
   schematic_ascii?: string;
+  code_snippet?: string;
   challenge_task?: string;
   model?: string;
   /** Set on locally generated demo results so the UI can label them. */

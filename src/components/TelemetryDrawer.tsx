@@ -16,12 +16,12 @@ import {
   ExternalLink,
   Coins,
   Sparkles,
+  Code2,
 } from 'lucide-react';
 import { AnalysisResult, Currency, DetectionItem, OperatingMode } from '../types';
 import { speakJarvis, playTacticalAudio } from '../utils/audio';
 import { buildStoreLinks, copyText, formatPrice } from '../utils/shopping';
 import { SolderCoachOverlay } from './SolderCoachOverlay';
-import { FirmwareSuiteGenerator } from './FirmwareSuiteGenerator';
 import { DeviceDoctorWizard } from './DeviceDoctorWizard';
 import { SolderCoach } from '../hooks/useSolderCoach';
 
@@ -93,6 +93,7 @@ export const TelemetryDrawer: React.FC<TelemetryDrawerProps> = ({
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [copiedSchematic, setCopiedSchematic] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
   const [question, setQuestion] = useState('');
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [loggedIdx, setLoggedIdx] = useState<Set<number>>(new Set());
@@ -118,6 +119,14 @@ export const TelemetryDrawer: React.FC<TelemetryDrawerProps> = ({
     if (await copyText(analysis.schematic_ascii)) {
       setCopiedSchematic(true);
       setTimeout(() => setCopiedSchematic(false), 2000);
+    }
+  };
+
+  const copyCode = async () => {
+    if (!analysis?.code_snippet) return;
+    if (await copyText(analysis.code_snippet)) {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
     }
   };
 
@@ -438,7 +447,26 @@ export const TelemetryDrawer: React.FC<TelemetryDrawerProps> = ({
               </div>
             )}
 
-            {activeMode === 'BUILD_ADVISOR' && <FirmwareSuiteGenerator />}
+            {analysis.code_snippet && (
+              <div className="p-3 rounded-xl bg-[#050811] border border-cyan-500/40">
+                <div className="flex items-center justify-between pb-2 mb-2 border-b border-cyan-950/60">
+                  <div className="flex items-center gap-1.5 text-cyan-300 font-mono font-bold text-xs uppercase">
+                    <Code2 className="w-3.5 h-3.5" />
+                    <span>Arduino / ESP32 sketch</span>
+                  </div>
+                  <button
+                    onClick={copyCode}
+                    className="min-h-[32px] px-2 rounded bg-cyan-500/20 text-cyan-300 text-[10px] font-mono flex items-center gap-1"
+                  >
+                    {copiedCode ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedCode ? 'COPIED' : 'COPY'}</span>
+                  </button>
+                </div>
+                <pre className="font-mono text-[11px] text-cyan-100 overflow-auto max-h-80 p-2 bg-black/60 rounded border border-cyan-950/80 leading-relaxed">
+                  {analysis.code_snippet}
+                </pre>
+              </div>
+            )}
 
             {analysis.model && <p className="text-[10px] font-mono text-slate-600 text-right">via {analysis.model}</p>}
           </div>

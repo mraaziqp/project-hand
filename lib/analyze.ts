@@ -1,6 +1,6 @@
 // Shared Gemini vision analysis used by both the local Express server (server.ts)
 // and the Vercel serverless function (api/analyze.ts).
-import { ApiError, GoogleGenAI, Type } from '@google/genai';
+import { ApiError, GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 export const OPERATING_MODES = [
   'HARVEST',
@@ -15,20 +15,28 @@ const COMPONENT_TYPES = ['THROUGH_HOLE', 'SMD', 'CONNECTOR', 'IC_CHIP', 'MODULE'
 const HARVEST_WORTH = ['HIGH', 'MEDIUM', 'LOW', 'SKIP'];
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'ZAR', 'INR', 'AUD', 'CAD'];
 
-// Models are tried in order; the first one that answers is remembered for the
-// life of the process. Google retires model IDs regularly (gemini-2.5-flash is
-// scheduled for shutdown 2026-10-16), so GEMINI_MODEL lets you pin a new one
-// without a code change, and the "-latest" alias tracks the current Flash model.
+// Models are tried in order. Benchmarked 2026-10-15 on real PSU/HDD photos:
+// gemini-3.5-flash-lite answered in 5-9s with the most accurate boxes, while the
+// full Flash models (3.5-3.8) were frequently overloaded (503s that can take 25s
+// to come back). gemini-2.5-flash is scheduled for shutdown 2026-10-16.
+// GEMINI_MODEL (comma-separated) is tried first, to pin a model without a deploy.
 const MODEL_CANDIDATES = Array.from(
   new Set(
     [
       ...(process.env.GEMINI_MODEL || '').split(',').map(s => s.trim()),
-      'gemini-flash-latest',
+      'gemini-3.5-flash-lite',
       'gemini-3.5-flash',
       'gemini-2.5-flash',
+      'gemini-flash-lite-latest',
     ].filter(Boolean)
   )
 );
+
+// Whole-request budget stays under the 60s Vercel function limit; a single slow
+// model may use most of it but leaves time for one fallback attempt.
+const TOTAL_BUDGET_MS = 54_000;
+const FIRST_ATTEMPT_MS = 38_000;
+const MIN_ATTEMPT_MS = 8_000;
 let workingModel: string | null = null;
 
 let client: GoogleGenAI | null = null;
@@ -53,7 +61,7 @@ const analysisSchema = {
     },
     answer: {
       type: Type.STRING,
-      description: "Direct, practical answer to the user's question if one was asked; otherwise empty string.",
+      description: "Direct, practical answer to the user's question if one was asked; in build advisor mode, the project recommendations. Otherwise empty string.",
     },
     step_by_step_guide: {
       type: Type.ARRAY,
@@ -81,7 +89,7 @@ const analysisSchema = {
           box_2d: {
             type: Type.ARRAY,
             items: { type: Type.INTEGER },
-            description: '[ymin, xmin, ymax, xmax] normalized to 0-1000 relative to the image.',
+            description: '[ymin, xmin, ymax, xmax] normalized to 0-1000, tightly enclosing ONLY this one part.',
           },
           label: {
             type: Type.STRING,
@@ -141,6 +149,10 @@ const analysisSchema = {
       type: Type.STRING,
       description: 'Optional ASCII wiring diagram showing how to connect the parts. Empty string if not useful.',
     },
+    code_snippet: {
+      type: Type.STRING,
+      description: 'Build advisor only: a complete, compilable Arduino/ESP32 sketch for the top project (pins matching schematic_ascii). Empty string otherwise.',
+    },
     challenge_task: {
       type: Type.STRING,
       description: 'Only for craving override mode: a 3-minute physical hands-on challenge. Otherwise empty string.',
@@ -172,12 +184,14 @@ const MODE_PROMPTS: Record<Mode, string> = {
 4. Reinforce the 3-second rule (tin tip, heat pad+lead ~2s, feed solder, remove heat and hold still) and the walk-and-rock desolder method where relevant.
 5. spoken_telemetry: speak directly to their technique in 2-3 sentences.`,
   BUILD_ADVISOR: `BUILD ADVISOR MODE:
-1. Look at what is in view and cross-reference the user's parts bin (listed in the system instructions).
-2. Recommend 1-2 concrete projects they can build mostly from what they have, naming exactly which parts are used.
-3. Put an ASCII wiring diagram with exact pin-to-pin connections in schematic_ascii.
-4. shopping_list: anything they still need to buy to finish the project (with prices).
-5. Box any parts in view that the project uses.
-6. spoken_telemetry: announce the best project to build right now.`,
+1. Look at what is in view and cross-reference the user's parts bin (listed in the system instructions). Use as many of the relevant parts as make sense.
+2. In "answer", recommend 2 concrete projects (best first) they can build mostly from what they have: name, what it does, exactly which parts it uses, difficulty, and roughly how long it takes.
+3. step_by_step_guide: the build steps for the top project, including power and any safety notes (e.g. never drive motors directly from GPIO).
+4. schematic_ascii: ASCII wiring diagram with exact pin-to-pin connections for the top project.
+5. code_snippet: a complete, working Arduino/ESP32 sketch for the top project that matches the wiring.
+6. shopping_list: anything still needed to finish it (drivers, resistors, power), with prices.
+7. Box any parts in view that the project uses.
+8. spoken_telemetry: announce the best project to build right now.`,
   CRAVING_OVERRIDE: `CRAVING OVERRIDE PROTOCOL:
 1. The user has a nicotine craving right now and needs to keep their hands busy.
 2. Pick ONE specific component or joint cluster visible here and box it.
@@ -224,7 +238,7 @@ function buildPrompts(input: AnalyzeInput) {
 
   const systemInstruction = `You are JARVIS // BENCH-OS: a hardware reverse-engineering assistant, salvage scout and soldering coach for a budget electronics tinkerer working at a bench with their phone.
 Tone: sharp, concise, a little witty, always safety-conscious and technically precise. Never invent part numbers you cannot read - leave part_number empty instead.
-Coordinates: box_2d is [ymin, xmin, ymax, xmax] normalized 0-1000 for every detection.
+Coordinates: box_2d is [ymin, xmin, ymax, xmax] normalized 0-1000 for every detection. Each box must tightly enclose only that single physical part (not the whole device, not a group of unrelated parts). Prefer fewer, accurate boxes over many vague ones.
 Prices: estimate realistic prices in ${currency} for buying the part new from cheap online sources (AliExpress/LCSC-level pricing for components, retail for modules). Use 0 when you have no idea.
 
 If the image contains no electronics, device, tool or hardware at all (e.g. a face, an empty room, a ceiling), return empty detections, an empty shopping_list, object_identified "" and say briefly that nothing relevant is in view.
@@ -236,7 +250,7 @@ User's salvaged parts bin: ${JSON.stringify(inventory)}.`;
   if (question) {
     promptText += `\n\nUSER QUESTION (answer it directly and practically in "answer", using what is visible in the image): ${question}`;
   }
-  return { mode, systemInstruction, promptText };
+  return { mode, question, systemInstruction, promptText };
 }
 
 function clamp(n: unknown, lo: number, hi: number): number {
@@ -256,6 +270,12 @@ function sanitize(raw: any) {
       let [ymin, xmin, ymax, xmax] = d.box_2d.map((v: unknown) => clamp(v, 0, 1000));
       if (ymin > ymax) [ymin, ymax] = [ymax, ymin];
       if (xmin > xmax) [xmin, xmax] = [xmax, xmin];
+      // Drop boxes that can't point at a specific part (tiny or whole-frame); the
+      // part stays in the list, the client just doesn't draw it.
+      const area = ((ymax - ymin) * (xmax - xmin)) / 1_000_000;
+      if (area < 0.0005 || (area > 0.9 && raw.detections.length > 1)) {
+        ymin = xmin = ymax = xmax = 0;
+      }
       return {
         box_2d: [ymin, xmin, ymax, xmax],
         label: asString(d.label, 200) || 'Unknown part',
@@ -293,6 +313,7 @@ function sanitize(raw: any) {
     detections,
     shopping_list,
     schematic_ascii: asString(raw?.schematic_ascii, 6000),
+    code_snippet: asString(raw?.code_snippet, 12000),
     challenge_task: asString(raw?.challenge_task, 1000),
   };
 }
@@ -306,6 +327,11 @@ function isModelUnavailable(err: unknown): boolean {
     msg.includes('no longer available') ||
     msg.includes('is not supported for generatecontent')
   );
+}
+
+function isTimeout(err: unknown): boolean {
+  const name = err instanceof Error ? err.name : '';
+  return name === 'TimeoutError' || name === 'AbortError';
 }
 
 function isTransient(err: unknown): boolean {
@@ -328,17 +354,27 @@ export async function analyzeImage(input: AnalyzeInput) {
   const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
   const data = image.replace(/^data:[^;]+;base64,/, '');
 
-  const { systemInstruction, promptText } = buildPrompts(input);
+  const { mode, question, systemInstruction, promptText } = buildPrompts(input);
+  // Reasoning-heavy requests get more thinking on Gemini 3.x; quick scans stay fast.
+  const deep = mode === 'BUILD_ADVISOR' || mode === 'DEVICE_DOCTOR' || !!question;
 
   const candidates = workingModel ? [workingModel, ...MODEL_CANDIDATES.filter(m => m !== workingModel)] : MODEL_CANDIDATES;
   let lastErr: unknown = null;
+  // Only skip ahead permanently when earlier models are gone (404), not merely busy.
+  let earlierModelsRetired = true;
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
 
-  for (const model of candidates) {
+  for (const [attempt, model] of candidates.entries()) {
+    const remaining = deadline - Date.now();
+    if (remaining < MIN_ATTEMPT_MS) break;
+    const attemptMs = attempt === 0 ? Math.min(FIRST_ATTEMPT_MS, remaining) : remaining;
     try {
       const response = await getClient().models.generateContent({
         model,
         contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data } }, { text: promptText }] }],
         config: {
+          abortSignal: AbortSignal.timeout(attemptMs),
+          ...(model.startsWith('gemini-3') && deep ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } } : {}),
           systemInstruction,
           responseMimeType: 'application/json',
           responseSchema: analysisSchema,
@@ -354,16 +390,17 @@ export async function analyzeImage(input: AnalyzeInput) {
         console.error(`[analyze] ${model} returned non-JSON output:`, rawText.slice(0, 500));
         throw new AnalyzeError('The vision model returned an unreadable answer. Try scanning again.', 502);
       }
-      if (workingModel !== model) {
+      if (workingModel !== model && earlierModelsRetired) {
         workingModel = model;
         console.log(`[analyze] using model ${model}`);
       }
       return { ...sanitize(parsed), model };
     } catch (err) {
       lastErr = err;
-      if (isModelUnavailable(err) || isTransient(err)) {
-        console.warn(`[analyze] model ${model} failed (${(err as Error).message}); trying next candidate`);
-        if (workingModel === model) workingModel = null;
+      if (isModelUnavailable(err) || isTransient(err) || isTimeout(err)) {
+        console.warn(`[analyze] model ${model} failed (${String((err as Error).message).slice(0, 160)}); trying next candidate`);
+        if (!isModelUnavailable(err)) earlierModelsRetired = false;
+        if (workingModel === model && isModelUnavailable(err)) workingModel = null;
         continue;
       }
       break;
@@ -371,6 +408,9 @@ export async function analyzeImage(input: AnalyzeInput) {
   }
 
   if (lastErr instanceof AnalyzeError) throw lastErr;
+  if (isTimeout(lastErr)) {
+    throw new AnalyzeError('The vision model took too long. Try again, or use a smaller/closer photo.', 504);
+  }
   const status = lastErr instanceof ApiError ? lastErr.status : 500;
   const message = lastErr instanceof Error ? lastErr.message : 'Vision analysis failed';
   if (status === 400 && /api key/i.test(message)) {

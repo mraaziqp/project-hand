@@ -36,6 +36,14 @@ npx vercel deploy --prod
 ```
 
 Environment variables (Production): `GEMINI_API_KEY` (required), `APP_ACCESS_KEY` (recommended), optional `GEMINI_MODEL`.
+
+### Models
+
+Default chain (see `lib/analyze.ts`): `gemini-3.5-flash-lite` → `gemini-3.5-flash` → `gemini-2.5-flash` → `gemini-flash-lite-latest`.
+Benchmarked 2026-10-15 on real PSU / hard-drive / Arduino photos: flash-lite answered in 5-12s with the most accurate
+part boxes, while the full Flash models were often overloaded (503s that can take ~25s). Build advice, device-doctor
+and questions run with more thinking. To try another model without a code change, set `GEMINI_MODEL` (comma-separated)
+on Vercel and redeploy.
 DNS: `bench` CNAME → the target shown by `npx vercel domains verify bench.arpcloudsolutions.co.za` (zone is in AWS Route 53).
 
 ## Android APK (Capacitor)
