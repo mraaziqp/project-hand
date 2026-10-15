@@ -36,6 +36,7 @@ npx vercel deploy --prod
 ```
 
 Environment variables (Production): `GEMINI_API_KEY` (required), `APP_ACCESS_KEY` (recommended), optional `GEMINI_MODEL`.
+DNS: `bench` CNAME → the target shown by `npx vercel domains verify bench.arpcloudsolutions.co.za` (zone is in AWS Route 53).
 
 ### Models
 
@@ -44,7 +45,6 @@ Benchmarked 2026-10-15 on real PSU / hard-drive / Arduino photos: flash-lite ans
 part boxes, while the full Flash models were often overloaded (503s that can take ~25s). Build advice, device-doctor
 and questions run with more thinking. To try another model without a code change, set `GEMINI_MODEL` (comma-separated)
 on Vercel and redeploy.
-DNS: `bench` CNAME → the target shown by `npx vercel domains verify bench.arpcloudsolutions.co.za` (zone is in AWS Route 53).
 
 ## Android APK (Capacitor)
 
