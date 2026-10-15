@@ -5,48 +5,59 @@ export type OperatingMode =
   | 'CRAVING_OVERRIDE'
   | 'DEVICE_DOCTOR';
 
-export type ComponentType = 'THROUGH_HOLE' | 'SMD' | 'CONNECTOR' | 'IC_CHIP' | 'HAZARD';
+export type ComponentType = 'THROUGH_HOLE' | 'SMD' | 'CONNECTOR' | 'IC_CHIP' | 'MODULE' | 'MECHANICAL' | 'HAZARD';
+
+export type HarvestWorth = 'HIGH' | 'MEDIUM' | 'LOW' | 'SKIP';
+
+export type Currency = 'USD' | 'EUR' | 'GBP' | 'ZAR' | 'INR' | 'AUD' | 'CAD';
 
 export interface DetectionItem {
   box_2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] normalized 0-1000
   label: string;
   type: ComponentType;
+  part_number?: string;
+  harvest_worth?: HarvestWorth;
+  est_value?: number;
+  buy_search_query?: string;
   desolder_technique: string;
   pinout_notes: string;
   reuse_ideas: string;
 }
 
-export interface CircuitFirmware {
-  title: string;
-  description: string;
-  arduinoCode: string;
-  pythonNasCode: string;
-  nodeNasCode: string;
-  pinoutTable: {
-    partPin: string;
-    targetConnection: string;
-    notes: string;
-  }[];
-  continuityTestGuide: string[];
+export interface ShoppingItem {
+  item: string;
+  purpose: string;
+  est_price?: number;
+  search_query: string;
+  priority?: 'MUST' | 'NICE';
 }
 
 export interface AnalysisResult {
+  object_identified?: string;
   spoken_telemetry: string;
+  answer?: string;
   step_by_step_guide: string[];
   safety_hazard_detected: boolean;
   safety_warning?: string;
+  salvage_value_total?: number;
   detections: DetectionItem[];
+  shopping_list?: ShoppingItem[];
   schematic_ascii?: string;
+  code_snippet?: string;
   challenge_task?: string;
-  firmware_suite?: CircuitFirmware;
+  model?: string;
+  /** Set on locally generated demo results so the UI can label them. */
+  isDemo?: boolean;
 }
 
 export interface SalvagedPart {
   id: string;
   name: string;
-  category: 'Capacitor' | 'Header' | 'Switch' | 'LED' | 'IC' | 'MOSFET' | 'Buzzer' | 'Inductor' | 'Connector' | 'Other';
+  category: 'Capacitor' | 'Header' | 'Switch' | 'LED' | 'IC' | 'MOSFET' | 'Buzzer' | 'Inductor' | 'Connector' | 'Motor' | 'Module' | 'Other';
   dateHarvested: string;
   testedWorking: boolean;
+  partNumber?: string;
+  estValue?: number;
   pinout?: string;
   reuseIdeas?: string;
   sourceBoard?: string;
@@ -57,10 +68,8 @@ export interface BenchStats {
   nicotineFreeHours: number;
   partsHarvested: number;
   circuitsBuilt: number;
-  budgetSaved: number; // in USD
+  budgetSaved: number;
 }
-
-export type CameraSourceType = 'REAR_CAM' | 'FRONT_CAM' | 'EXTERNAL_IP' | 'SAMPLE_PHOTO';
 
 export interface SampleBoard {
   id: string;
@@ -77,7 +86,6 @@ export interface DeviceDoctorStep {
   instruction: string;
   caution: string;
   tool: string;
-  box_2d?: [number, number, number, number];
 }
 
 export interface EcosystemStatus {
@@ -85,4 +93,21 @@ export interface EcosystemStatus {
   latencyMs: number | null;
   lastPing: string | null;
   message?: string;
+}
+
+export interface ScanHistoryEntry {
+  id: string;
+  timestamp: string;
+  mode: OperatingMode;
+  question?: string;
+  thumbnail: string; // small JPEG data URL
+  analysis: AnalysisResult;
+}
+
+/** A still image currently shown in the viewport (captured, uploaded or demo). */
+export interface StillFrame {
+  src: string; // data URL
+  width: number;
+  height: number;
+  demoBoardId?: string;
 }

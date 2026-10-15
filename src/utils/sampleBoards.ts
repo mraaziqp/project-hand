@@ -1,5 +1,103 @@
 import { SampleBoard } from '../types';
 
+const demoCache = new Map<string, string>();
+
+/** Draw a synthetic calibration board for the offline demo presets. */
+export function renderSampleBoard(board: SampleBoard): { src: string; width: number; height: number } {
+  const width = 1000;
+  const height = 750;
+  const cached = demoCache.get(board.id);
+  if (cached) return { src: cached, width, height };
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#0a2318';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = '#123d2b';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < width; i += 24) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, height);
+    ctx.stroke();
+  }
+  for (let j = 0; j < height; j += 24) {
+    ctx.beginPath();
+    ctx.moveTo(0, j);
+    ctx.lineTo(width, j);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = '#b8860b';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(120, 150);
+  ctx.lineTo(350, 150);
+  ctx.lineTo(350, 300);
+  ctx.lineTo(600, 300);
+  ctx.lineTo(750, 480);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(150, 450);
+  ctx.lineTo(300, 450);
+  ctx.lineTo(400, 600);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 20px "JetBrains Mono", monospace';
+  ctx.fillText(board.title.toUpperCase(), 40, 50);
+  ctx.font = '14px "JetBrains Mono", monospace';
+  ctx.fillStyle = '#22d3ee';
+  ctx.fillText(`DEMO CALIBRATION BOARD // ${board.difficulty}`, 40, 76);
+
+  for (const det of board.mockAnalysis.detections) {
+    const [ymin, xmin, ymax, xmax] = det.box_2d;
+    const x = (xmin / 1000) * width;
+    const y = (ymin / 1000) * height;
+    const w = ((xmax - xmin) / 1000) * width;
+    const h = ((ymax - ymin) / 1000) * height;
+    const label = det.label.toLowerCase();
+
+    if (det.type === 'HAZARD') {
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.25)';
+      ctx.strokeStyle = '#f43f5e';
+      ctx.lineWidth = 3;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+    } else if (label.includes('capacitor')) {
+      ctx.fillStyle = '#1e293b';
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, y + h / 2, w / 2.2, h / 2.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x + w * 0.15, y + h * 0.2, w * 0.15, h * 0.6);
+    } else if (label.includes('button') || label.includes('switch')) {
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = '#0ea5e9';
+      ctx.beginPath();
+      ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) * 0.25, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(x + w * 0.1, y + h * 0.1, w * 0.8, h * 0.8);
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillRect(x + w * 0.25, y + h * 0.02, w * 0.5, h * 0.08);
+    }
+  }
+
+  const src = canvas.toDataURL('image/jpeg', 0.9);
+  demoCache.set(board.id, src);
+  return { src, width, height };
+}
+
 export const SAMPLE_BOARDS: SampleBoard[] = [
   {
     id: 'router-pcb',

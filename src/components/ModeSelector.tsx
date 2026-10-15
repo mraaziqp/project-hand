@@ -21,12 +21,11 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
     accentColor: string;
     borderActive: string;
     bgActive: string;
-    badge?: string;
   }[] = [
     {
       id: 'HARVEST',
-      label: 'SCAN & HARVEST',
-      sublabel: 'PCB Component Stripper',
+      label: 'SCAN & SOURCE',
+      sublabel: "What it is, what's inside, prices",
       icon: Search,
       accentColor: 'text-cyan-400',
       borderActive: 'border-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.3)]',
@@ -44,7 +43,7 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
     {
       id: 'BUILD_ADVISOR',
       label: 'BUILD ADVISOR',
-      sublabel: 'Zero-Cost Schematics & Code',
+      sublabel: 'Projects from your parts bin',
       icon: Wrench,
       accentColor: 'text-amber-400',
       borderActive: 'border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.3)]',
@@ -53,28 +52,26 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
     {
       id: 'DEVICE_DOCTOR',
       label: 'DEVICE DOCTOR',
-      sublabel: 'Non-Destructive Triage',
+      sublabel: 'Why is it dead? Repair plan',
       icon: Stethoscope,
       accentColor: 'text-sky-400',
       borderActive: 'border-sky-400 shadow-[0_0_15px_rgba(56,189,248,0.3)]',
       bgActive: 'bg-sky-950/40',
-      badge: 'TRIAGE',
     },
     {
       id: 'CRAVING_OVERRIDE',
-      label: 'CRAVING OVERRIDE',
-      sublabel: '3-Min Dopamine Protocol',
+      label: 'CRAVING',
+      sublabel: '3-min hands-busy challenge',
       icon: ShieldAlert,
       accentColor: 'text-rose-400',
       borderActive: 'border-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.35)]',
       bgActive: 'bg-rose-950/50',
-      badge: 'URGENT',
     },
   ];
 
   return (
     <div className="w-full">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-2.5">
+      <div className="flex gap-2 overflow-x-auto snap-x pb-1 -mx-2 px-2 sm:mx-0 sm:px-0 lg:grid lg:grid-cols-5 lg:overflow-visible no-scrollbar">
         {modes.map(mode => {
           const Icon = mode.icon;
           const isActive = activeMode === mode.id;
@@ -84,7 +81,8 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
               key={mode.id}
               onClick={() => onSelectMode(mode.id)}
               disabled={isAnalyzing}
-              className={`relative min-h-[58px] sm:min-h-[64px] p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all active:scale-[0.98] ${
+              aria-pressed={isActive}
+              className={`relative shrink-0 snap-start w-[58%] xs:w-[48%] sm:w-[31%] lg:w-auto min-h-[56px] p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all active:scale-[0.98] disabled:opacity-60 ${
                 isActive
                   ? `${mode.borderActive} ${mode.bgActive} ring-1 ring-white/10`
                   : 'bg-[#0b1329]/70 border-slate-800/80 hover:border-slate-700 hover:bg-[#0f1b3d]/60 text-slate-300'
@@ -120,11 +118,6 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({
                   >
                     {mode.label}
                   </span>
-                  {mode.badge && (
-                    <span className="px-1 py-0.2 text-[8px] font-mono font-bold text-sky-300 bg-sky-500/20 rounded">
-                      {mode.badge}
-                    </span>
-                  )}
                 </div>
                 <p className="text-[10px] text-slate-400 font-sans truncate">
                   {mode.sublabel}

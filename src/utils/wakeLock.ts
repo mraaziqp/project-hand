@@ -1,34 +1,39 @@
-// Screen Wake Lock API controller so workbench smartphone screen stays on while holding hot iron
+// Keeps the phone screen on while working at the bench.
+import { KeepAwake } from '@capacitor-community/keep-awake';
+import { isNativeApp } from './platform';
 
-let wakeLockSentinel: any = null;
+let wakeLockSentinel: WakeLockSentinel | null = null;
 
 export async function requestScreenWakeLock(): Promise<boolean> {
-  if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) {
-    console.info('Screen Wake Lock API not supported on this browser/platform.');
-    return false;
+  if (isNativeApp()) {
+    try {
+      await KeepAwake.keepAwake();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
+  if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) return false;
+  if (wakeLockSentinel && !wakeLockSentinel.released) return true;
+
   try {
-    wakeLockSentinel = await (navigator as any).wakeLock.request('screen');
+    wakeLockSentinel = await navigator.wakeLock.request('screen');
     wakeLockSentinel.addEventListener('release', () => {
       wakeLockSentinel = null;
     });
     return true;
   } catch (err) {
-    console.warn('Wake Lock request rejected:', err);
+    console.info('Wake Lock request rejected:', err);
     return false;
   }
 }
 
 export function releaseScreenWakeLock() {
-  if (wakeLockSentinel) {
-    try {
-      wakeLockSentinel.release();
-    } catch {}
-    wakeLockSentinel = null;
+  if (isNativeApp()) {
+    KeepAwake.allowSleep().catch(() => {});
+    return;
   }
-}
-
-export function isWakeLockActive(): boolean {
-  return wakeLockSentinel !== null && !wakeLockSentinel.released;
+  wakeLockSentinel?.release().catch(() => {});
+  wakeLockSentinel = null;
 }

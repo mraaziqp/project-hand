@@ -15,6 +15,11 @@ export type VoiceCommandHandler = (
   rawPhrase: string
 ) => void;
 
+// The recognizer is created once, so it calls whatever handler is current rather
+// than the one captured when listening first started (avoids stale React state).
+let currentHandler: VoiceCommandHandler | null = null;
+let currentStatusHandler: ((active: boolean) => void) | undefined;
+
 interface SpeechRecognitionInstance {
   continuous: boolean;
   interimResults: boolean;
@@ -43,6 +48,8 @@ export function startHandsFreeListening(onCommand: VoiceCommandHandler, onStatus
   }
 
   shouldKeepListening = true;
+  currentHandler = onCommand;
+  currentStatusHandler = onStatusChange;
 
   const SpeechRecognitionConstructor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
@@ -56,16 +63,18 @@ export function startHandsFreeListening(onCommand: VoiceCommandHandler, onStatus
       recognition!.onresult = (event: any) => {
         const lastResultIndex = event.results.length - 1;
         const transcript = event.results[lastResultIndex][0].transcript.trim().toLowerCase();
-        console.log('[JARVIS MIC]: Heard phrase ->', transcript);
+        const onCommand: VoiceCommandHandler = (cmd, phrase) => currentHandler?.(cmd, phrase);
 
         // Command parsing rules (hands occupied holding soldering iron)
-        if (transcript.includes('heat') || transcript.includes('pace joint') || transcript.includes('three second')) {
+        if (transcript.includes('log part') || transcript.includes('save part') || transcript.includes('harvest part')) {
+          onCommand('LOG_PART', transcript);
+        } else if (/\bheat\b/.test(transcript) || transcript.includes('pace joint') || transcript.includes('three second')) {
           onCommand('HEAT', transcript);
         } else if (transcript.includes('auto watch') || transcript.includes('overwatch')) {
           onCommand('AUTO_WATCH', transcript);
         } else if (transcript.includes('doctor') || transcript.includes('triage') || transcript.includes('dead phone')) {
           onCommand('DOCTOR', transcript);
-        } else if (transcript.includes('scan') || transcript.includes('harvest') || transcript.includes('motherboard')) {
+        } else if (transcript.includes('scan') || transcript.includes('harvest') || transcript.includes('what is this') || transcript.includes('source')) {
           onCommand('SCAN', transcript);
         } else if (
           transcript.includes('check joint') ||
@@ -90,8 +99,6 @@ export function startHandsFreeListening(onCommand: VoiceCommandHandler, onStatus
           transcript.includes('urge')
         ) {
           onCommand('CRAVING', transcript);
-        } else if (transcript.includes('log part') || transcript.includes('save part') || transcript.includes('harvest part')) {
-          onCommand('LOG_PART', transcript);
         } else if (transcript.includes('mute') || transcript.includes('quiet') || transcript.includes('stop voice')) {
           onCommand('MUTE', transcript);
         } else if (transcript.includes('torch') || transcript.includes('light') || transcript.includes('flash')) {
@@ -100,6 +107,10 @@ export function startHandsFreeListening(onCommand: VoiceCommandHandler, onStatus
       };
 
       recognition!.onerror = (event: any) => {
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          // Permission denied: stop the auto-restart loop.
+          shouldKeepListening = false;
+        }
         if (event.error !== 'no-speech') {
           console.warn('[JARVIS MIC] speech error:', event.error);
         }
@@ -107,14 +118,14 @@ export function startHandsFreeListening(onCommand: VoiceCommandHandler, onStatus
 
       recognition!.onend = () => {
         isListening = false;
-        if (onStatusChange) onStatusChange(false);
+        currentStatusHandler?.(false);
         if (shouldKeepListening) {
           setTimeout(() => {
             if (shouldKeepListening && !isListening) {
               try {
                 recognition?.start();
                 isListening = true;
-                if (onStatusChange) onStatusChange(true);
+                currentStatusHandler?.(true);
               } catch {}
             }
           }, 300);
