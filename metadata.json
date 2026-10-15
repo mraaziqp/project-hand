@@ -1,0 +1,6 @@
+{
+  "name": "JARVIS // BENCH-OS",
+  "description": "Real-time hardware reverse-engineering, soldering coach, and nicotine-craving override HUD for electronics workbenches.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
