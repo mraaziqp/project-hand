@@ -9,10 +9,12 @@ import {
   X,
   Sparkles,
   Download,
+  RefreshCw,
 } from 'lucide-react';
 import { Currency, SalvagedPart } from '../types';
 import { playTacticalAudio } from '../utils/audio';
 import { formatPrice } from '../utils/shopping';
+import { postJSON } from '../utils/api';
 
 interface PartsBinDrawerProps {
   isOpen: boolean;
@@ -101,6 +103,34 @@ export const PartsBinDrawer: React.FC<PartsBinDrawerProps> = ({
   };
 
   const totalValue = parts.reduce((sum, p) => sum + (p.estValue ?? 0), 0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncDone, setSyncDone] = useState(false);
+
+  const handleSyncEcosystem = async () => {
+    if (parts.length === 0) return;
+    setIsSyncing(true);
+    playTacticalAudio.chirp();
+    try {
+      await postJSON('/api/jarvis/inventory-sync', {
+        parts,
+        stats: { totalParts: parts.length, totalValue },
+      });
+      await postJSON('/api/agent-builder/relay', {
+        title: `BENCH-OS Inventory Sync (${parts.length} parts)`,
+        message: `Parts bin updated: ${parts.map(p => p.name).slice(0, 10).join(', ')}${parts.length > 10 ? '...' : ''}`,
+        sender: 'BENCH-OS',
+        eventType: 'event',
+        metadata: { totalParts: parts.length, totalValue },
+      });
+      setSyncDone(true);
+      playTacticalAudio.success();
+      setTimeout(() => setSyncDone(false), 3000);
+    } catch {
+      playTacticalAudio.alert();
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md">
@@ -112,6 +142,15 @@ export const PartsBinDrawer: React.FC<PartsBinDrawerProps> = ({
             <span className="truncate">PARTS BIN ({parts.length})</span>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleSyncEcosystem}
+              disabled={parts.length === 0 || isSyncing}
+              className="min-h-[40px] px-2.5 rounded-lg bg-cyan-950/60 text-cyan-300 border border-cyan-500/40 text-xs font-mono flex items-center gap-1.5 disabled:opacity-40 transition active:scale-95"
+              title="Sync parts to Jarvis & Agent Builder"
+            >
+              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span className="hidden xs:inline">{isSyncing ? 'SYNCING...' : syncDone ? 'SYNCED!' : 'SYNC'}</span>
+            </button>
             <button
               onClick={exportJSON}
               disabled={parts.length === 0}

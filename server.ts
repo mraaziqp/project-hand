@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { AnalyzeError, analyzeImage, isAuthorized } from './lib/analyze.js';
+import { AnalyzeError, analyzeImage, isAuthorized, parseOutboundUrl } from './lib/analyze.js';
 import { relayInventorySync, relayNas, relayTelemetry, relayAgentBuilder, RelayResult } from './lib/relays.js';
 import { applyCors } from './lib/http.js';
 
@@ -27,8 +27,54 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, geminiConfigured: !!process.env.GEMINI_API_KEY });
+app.get('/api/health', async (req, res) => {
+  const wantsProbe = req.query?.probe === '1';
+  const hasGemini = !!process.env.GEMINI_API_KEY;
+  const jarvisUrl = process.env.JARVIS_CORE_URL || 'https://jarvis.savestate.co.za';
+  const agentBuilderUrl =
+    process.env.AGENT_BUILDER_URL || 'https://portfolio.arpcloudsolutions.co.za/api/agent-builder/bridge';
+
+  let jarvisProbe: { ok: boolean; status?: number; latencyMs?: number; error?: string } | null = null;
+  let agentBuilderProbe: { ok: boolean; status?: number; latencyMs?: number; error?: string } | null = null;
+
+  if (wantsProbe) {
+    const probeTarget = async (urlStr: string) => {
+      const url = parseOutboundUrl(urlStr);
+      if (!url) return { ok: false, error: 'Invalid URL' };
+      const start = Date.now();
+      try {
+        const r = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(4000) });
+        return { ok: r.ok || r.status < 500, status: r.status, latencyMs: Date.now() - start };
+      } catch (err: any) {
+        return { ok: false, error: err?.message || 'Unreachable', latencyMs: Date.now() - start };
+      }
+    };
+
+    [jarvisProbe, agentBuilderProbe] = await Promise.all([
+      probeTarget(jarvisUrl),
+      probeTarget(agentBuilderUrl),
+    ]);
+  }
+
+  res.json({
+    ok: true,
+    version: '3.2.0',
+    app: 'JARVIS // BENCH-OS',
+    timestamp: new Date().toISOString(),
+    connections: {
+      gemini: { configured: hasGemini },
+      jarvis: {
+        configured: true,
+        endpoint: jarvisUrl,
+        ...(jarvisProbe ? { probe: jarvisProbe } : {}),
+      },
+      agentBuilder: {
+        configured: true,
+        endpoint: agentBuilderUrl,
+        ...(agentBuilderProbe ? { probe: agentBuilderProbe } : {}),
+      },
+    },
+  });
 });
 
 app.post('/api/analyze', async (req, res) => {

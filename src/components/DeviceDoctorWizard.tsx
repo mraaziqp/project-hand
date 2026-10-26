@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Stethoscope, CheckCircle2, AlertTriangle, Check } from 'lucide-react';
+import { Stethoscope, CheckCircle2, AlertTriangle, Check, Bot } from 'lucide-react';
 import { DeviceDoctorStep } from '../types';
 import { playTacticalAudio, speakJarvis } from '../utils/audio';
+import { postJSON } from '../utils/api';
 
 const TRIAGE_STEPS: DeviceDoctorStep[] = [
   {
@@ -49,6 +50,8 @@ const TRIAGE_STEPS: DeviceDoctorStep[] = [
 export const DeviceDoctorWizard: React.FC = () => {
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>({});
+  const [isReporting, setIsReporting] = useState(false);
+  const [reportDone, setReportDone] = useState(false);
 
   const currentStep = TRIAGE_STEPS[currentStepIdx];
 
@@ -62,6 +65,32 @@ export const DeviceDoctorWizard: React.FC = () => {
   const handleToggleComplete = (id: string) => {
     playTacticalAudio.success();
     setCompletedSteps(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleDispatchTriage = async () => {
+    setIsReporting(true);
+    playTacticalAudio.chirp();
+    const verifiedCount = Object.values(completedSteps).filter(Boolean).length;
+    try {
+      await postJSON('/api/agent-builder/relay', {
+        title: `BENCH-OS Device Doctor Triage Report (${verifiedCount}/${TRIAGE_STEPS.length} steps)`,
+        message: `Triage stage ${currentStepIdx + 1}: ${currentStep.title}. Completed: ${Object.keys(completedSteps).filter(k => completedSteps[k]).join(', ') || 'In progress'}`,
+        sender: 'BENCH-OS',
+        eventType: 'event',
+        metadata: {
+          currentStep: currentStep.id,
+          verifiedCount,
+          completedSteps,
+        },
+      });
+      setReportDone(true);
+      playTacticalAudio.success();
+      setTimeout(() => setReportDone(false), 3000);
+    } catch {
+      playTacticalAudio.alert();
+    } finally {
+      setIsReporting(false);
+    }
   };
 
   return (
@@ -158,13 +187,23 @@ export const DeviceDoctorWizard: React.FC = () => {
         </div>
 
         {/* Navigation Buttons */}
-        <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+        <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
           <button
             onClick={() => handleSelectStep(Math.max(0, currentStepIdx - 1))}
             disabled={currentStepIdx === 0}
             className="min-h-[40px] px-3 rounded-lg text-xs font-mono bg-slate-900 border border-slate-800 disabled:opacity-40 text-slate-300"
           >
             ← Prev
+          </button>
+
+          <button
+            onClick={handleDispatchTriage}
+            disabled={isReporting}
+            className="min-h-[40px] px-3 rounded-lg text-xs font-mono bg-purple-950/40 border border-purple-500/40 text-purple-200 hover:bg-purple-900/40 flex items-center gap-1.5 transition active:scale-95"
+            title="Dispatch triage report to Agent Builder"
+          >
+            <Bot className="w-3.5 h-3.5 text-purple-400" />
+            <span className="hidden xs:inline">{isReporting ? 'SENDING...' : reportDone ? 'DISPATCHED!' : 'REPORT TO BUILDER'}</span>
           </button>
 
           <button
