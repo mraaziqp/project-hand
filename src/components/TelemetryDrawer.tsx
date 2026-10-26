@@ -17,10 +17,12 @@ import {
   Coins,
   Sparkles,
   Code2,
+  Bot,
 } from 'lucide-react';
 import { AnalysisResult, Currency, DetectionItem, OperatingMode } from '../types';
 import { speakJarvis, playTacticalAudio } from '../utils/audio';
 import { buildStoreLinks, copyText, formatPrice } from '../utils/shopping';
+import { postJSON } from '../utils/api';
 import { SolderCoachOverlay } from './SolderCoachOverlay';
 import { DeviceDoctorWizard } from './DeviceDoctorWizard';
 import { SolderCoach } from '../hooks/useSolderCoach';
@@ -97,6 +99,34 @@ export const TelemetryDrawer: React.FC<TelemetryDrawerProps> = ({
   const [question, setQuestion] = useState('');
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [loggedIdx, setLoggedIdx] = useState<Set<number>>(new Set());
+  const [isDispatching, setIsDispatching] = useState(false);
+  const [dispatchSent, setDispatchSent] = useState(false);
+
+  const handleDispatchToAgentBuilder = async () => {
+    if (!analysis) return;
+    setIsDispatching(true);
+    playTacticalAudio.chirp();
+    try {
+      await postJSON('/api/agent-builder/relay', {
+        title: `BENCH-OS Hardware Task: ${analysis.object_identified || 'Workbench Scan'}`,
+        message: `Analysis of ${analysis.object_identified || 'PCB'}. Detected ${analysis.detections?.length || 0} parts. Spoken guidance: ${analysis.spoken_telemetry}`,
+        sender: 'BENCH-OS',
+        eventType: 'event',
+        metadata: {
+          object: analysis.object_identified,
+          detections: analysis.detections?.map(d => ({ label: d.label, type: d.type, partNumber: d.part_number })),
+          safetyHazard: analysis.safety_hazard_detected,
+        },
+      });
+      setDispatchSent(true);
+      playTacticalAudio.success();
+      setTimeout(() => setDispatchSent(false), 4000);
+    } catch {
+      playTacticalAudio.alert();
+    } finally {
+      setIsDispatching(false);
+    }
+  };
 
   // Reset per-result UI state when a new analysis arrives.
   const [lastAnalysis, setLastAnalysis] = useState(analysis);
@@ -279,6 +309,33 @@ export const TelemetryDrawer: React.FC<TelemetryDrawerProps> = ({
             {askBox}
 
             {modeTools}
+
+            {/* Agent Builder Bridge Dispatch */}
+            <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-purple-950/30 border border-purple-500/30 text-purple-200">
+              <div className="flex items-center gap-2 min-w-0">
+                <Bot className="w-4 h-4 text-purple-400 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[11px] font-bold text-purple-200 truncate">Agent Builder Bridge</div>
+                  <div className="text-[10px] text-purple-300/80 truncate">Queue diagnostic or firmware build task</div>
+                </div>
+              </div>
+              <button
+                onClick={handleDispatchToAgentBuilder}
+                disabled={isDispatching}
+                className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-mono font-bold text-[10px] uppercase shrink-0 transition flex items-center gap-1 active:scale-95"
+              >
+                {isDispatching ? (
+                  'Sending...'
+                ) : dispatchSent ? (
+                  <>
+                    <Check className="w-3 h-3 text-emerald-300" />
+                    <span>Dispatched!</span>
+                  </>
+                ) : (
+                  'Send Task'
+                )}
+              </button>
+            </div>
 
             {/* Detected parts */}
             {detections.length > 0 && (

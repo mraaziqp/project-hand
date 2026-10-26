@@ -13,6 +13,7 @@ import {
   Settings,
   Coins,
   Globe,
+  Bot,
 } from 'lucide-react';
 import { UserSettings, saveStoredSettings } from '../utils/storage';
 import { SalvagedPart, BenchStats, EcosystemStatus, Currency } from '../types';
@@ -45,6 +46,8 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
 }) => {
   const [jarvisCoreUrl, setJarvisCoreUrl] = useState(settings.jarvisCoreApiUrl);
   const [secondBrainAuthToken, setSecondBrainAuthToken] = useState(settings.secondBrainAuthToken);
+  const [agentBuilderUrl, setAgentBuilderUrl] = useState(settings.agentBuilderUrl);
+  const [agentBuilderApiKey, setAgentBuilderApiKey] = useState(settings.agentBuilderApiKey);
   const [webhookUrl, setWebhookUrl] = useState(settings.nasWebhookUrl);
   const [currency, setCurrency] = useState<Currency>(settings.currency);
   const [accessKey, setAccessKey] = useState(settings.accessKey);
@@ -52,6 +55,10 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
 
   const [isPinging, setIsPinging] = useState(false);
   const [pingResult, setPingResult] = useState<{ success: boolean; latencyMs?: number; message: string } | null>(null);
+
+  const [isAgentBuilderPinging, setIsAgentBuilderPinging] = useState(false);
+  const [agentBuilderPingResult, setAgentBuilderPingResult] = useState<{ success: boolean; latencyMs?: number; message: string } | null>(null);
+
   const [activeScriptTab, setActiveScriptTab] = useState<'node' | 'python'>('node');
   const [copiedCode, setCopiedCode] = useState(false);
 
@@ -62,6 +69,8 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
       ...settings,
       jarvisCoreApiUrl: jarvisCoreUrl.trim(),
       secondBrainAuthToken: secondBrainAuthToken.trim(),
+      agentBuilderUrl: agentBuilderUrl.trim(),
+      agentBuilderApiKey: agentBuilderApiKey.trim(),
       nasWebhookUrl: webhookUrl.trim(),
       currency,
       accessKey: accessKey.trim(),
@@ -77,21 +86,15 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
     setPingResult(null);
     playTacticalAudio.chirp();
 
-    if (!jarvisCoreUrl.trim()) {
-      setPingResult({ success: false, message: 'Enter a Jarvis core URL first.' });
-      setIsPinging(false);
-      return;
-    }
-
     try {
-      const data = await postJSON<{ success: boolean; latencyMs?: number; error?: string }>('/api/jarvis/telemetry', {
-        jarvisCoreUrl: jarvisCoreUrl.trim(),
+      const data = await postJSON<{ success: boolean; latencyMs?: number; error?: string; message?: string }>('/api/jarvis/telemetry', {
+        jarvisCoreUrl: jarvisCoreUrl.trim() || undefined,
         authToken: secondBrainAuthToken.trim() || undefined,
         state: {
           event: 'HANDSHAKE_TEST',
           totalParts: parts.length,
           cravingsDefeated: stats.cravingsDefeated,
-          activeClient: 'BENCH-OS v3',
+          activeClient: 'BENCH-OS v3.1',
           timestamp: new Date().toISOString(),
         },
       });
@@ -101,7 +104,7 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
         setPingResult({
           success: true,
           latencyMs: latency,
-          message: `Connected (${latency}ms).`,
+          message: `Connected to Jarvis (${latency}ms).`,
         });
         playTacticalAudio.success();
         if (onEcosystemStatusChange) {
@@ -109,13 +112,13 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
             connected: true,
             latencyMs: latency,
             lastPing: new Date().toLocaleTimeString(),
-            message: 'Connected',
+            message: 'Jarvis Online',
           });
         }
       } else {
         setPingResult({
           success: false,
-          message: data.error || 'Could not connect. The app still works standalone.',
+          message: data.error || 'Could not connect to Jarvis.',
         });
         playTacticalAudio.alert();
         if (onEcosystemStatusChange) {
@@ -123,7 +126,7 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
             connected: false,
             latencyMs: null,
             lastPing: new Date().toLocaleTimeString(),
-            message: 'Offline / Standalone',
+            message: 'Jarvis Offline',
           });
         }
       }
@@ -132,6 +135,59 @@ export const NASSyncDrawer: React.FC<NASSyncDrawerProps> = ({
       playTacticalAudio.alert();
     } finally {
       setIsPinging(false);
+    }
+  };
+
+  const handleTestAgentBuilder = async () => {
+    setIsAgentBuilderPinging(true);
+    setAgentBuilderPingResult(null);
+    playTacticalAudio.chirp();
+
+    try {
+      const data = await postJSON<{ success: boolean; latencyMs?: number; error?: string; message?: string }>('/api/agent-builder/relay', {
+        agentBuilderUrl: agentBuilderUrl.trim() || undefined,
+        apiKey: agentBuilderApiKey.trim() || undefined,
+        title: 'BENCH-OS Handshake',
+        message: 'BENCH-OS Workbench connected to Agent Builder bridge',
+        sender: 'BENCH-OS',
+        eventType: 'event',
+        metadata: {
+          totalParts: parts.length,
+          cravingsDefeated: stats.cravingsDefeated,
+          client: 'BENCH-OS v3.1',
+          timestamp: new Date().toISOString(),
+        },
+      });
+
+      if (data.success) {
+        const latency = data.latencyMs ?? 0;
+        setAgentBuilderPingResult({
+          success: true,
+          latencyMs: latency,
+          message: `Connected to Agent Builder (${latency}ms).`,
+        });
+        playTacticalAudio.success();
+        if (onEcosystemStatusChange) {
+          onEcosystemStatusChange({
+            connected: true,
+            latencyMs: pingResult?.latencyMs ?? latency,
+            lastPing: new Date().toLocaleTimeString(),
+            agentBuilderConnected: true,
+            agentBuilderLatencyMs: latency,
+          });
+        }
+      } else {
+        setAgentBuilderPingResult({
+          success: false,
+          message: data.error || 'Could not reach Agent Builder bridge.',
+        });
+        playTacticalAudio.alert();
+      }
+    } catch (err: any) {
+      setAgentBuilderPingResult({ success: false, message: err.message || 'Agent Builder bridge error' });
+      playTacticalAudio.alert();
+    } finally {
+      setIsAgentBuilderPinging(false);
     }
   };
 
@@ -158,43 +214,44 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ACK', savedAt: new Date().toISOString() }));
       } catch (err) {
-        res.writeHead(400);
-        res.end('Invalid JSON');
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
       }
     });
   } else {
-    res.writeHead(200);
-    res.end('JARVIS // SECOND BRAIN BRIDGE ACTIVE');
+    res.writeHead(404);
+    res.end();
   }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(\`JARVIS Ecosystem Receiver listening on port \${PORT}\`);
+  console.log(\`JARVIS NAS Receiver listening on port \${PORT}\`);
 });`;
 
   const pythonScript = `# jarvis_nas_receiver.py
 # Deploy to TrueNAS / Synology / Unraid / Raspberry Pi: python3 jarvis_nas_receiver.py
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PORT = 8080
 INVENTORY_DB = "jarvis-salvaged-inventory.json"
 
 class JarvisHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
-        payload = json.loads(post_data.decode('utf-8'))
-        
-        print(f"[BENCH-OS SYNC]: {payload.get('event', 'TELEMETRY')}")
-        with open(INVENTORY_DB, "w") as f:
-            json.dump(payload, f, indent=2)
-            
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(b'{"status": "ACK", "synced": true}')
+        length = int(self.headers.get('content-length', 0))
+        body = self.rfile.read(length)
+        try:
+            data = json.loads(body.decode('utf-8'))
+            print(f"[BENCH-OS SYNC]: Received {data.get('event', 'DATA')}")
+            with open(INVENTORY_DB, "w") as f:
+                json.dump(data, f, indent=2)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"status":"ACK"}')
+        except Exception as e:
+            self.send_response(400)
+            self.end_headers()
 
 server = HTTPServer(('0.0.0.0', PORT), JarvisHandler)
 print(f"JARVIS Ecosystem Receiver listening on port {PORT}")
@@ -215,7 +272,7 @@ server.serve_forever()`;
         <div className="px-3 sm:px-5 py-3 bg-[#050811] border-b border-cyan-950/80 flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2 text-cyan-400 font-mono font-bold text-sm tracking-wide uppercase">
             <Settings className="w-5 h-5 text-cyan-400" />
-            <span>SETTINGS</span>
+            <span>BACKEND CONNECTIONS & SETTINGS</span>
           </div>
           <button onClick={onClose} className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-400 hover:text-white" title="Close">
             <X className="w-5 h-5" />
@@ -228,7 +285,7 @@ server.serve_forever()`;
           <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
             <div className="flex items-center gap-2 text-emerald-300 font-bold uppercase text-[11px]">
               <Coins className="w-4 h-4 text-emerald-400" />
-              <span>GENERAL</span>
+              <span>GENERAL & ACCESS SECURITY</span>
             </div>
             <div>
               <label className="text-slate-400 block text-[10px] mb-1">PRICE CURRENCY (estimates + Amazon store region)</label>
@@ -241,7 +298,7 @@ server.serve_forever()`;
               </select>
             </div>
             <div>
-              <label className="text-slate-400 block text-[10px] mb-1">ACCESS KEY (only if the server sets APP_ACCESS_KEY)</label>
+              <label className="text-slate-400 block text-[10px] mb-1">BENCH-OS ACCESS KEY (protects your live API)</label>
               <div className="relative">
                 <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} placeholder="Leave blank if not required" className={inputCls} autoComplete="off" />
                 <Key className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
@@ -257,78 +314,56 @@ server.serve_forever()`;
           </div>
 
           {/* Section 1: Jarvis Core API & Token */}
-          <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
-            <div className="flex items-center gap-2 text-cyan-300 font-bold uppercase text-[11px]">
-              <Server className="w-4 h-4 text-cyan-400" />
-              <span>JARVIS CORE (OPTIONAL)</span>
+          <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-cyan-900/40">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-cyan-300 font-bold uppercase text-[11px]">
+                <Server className="w-4 h-4 text-cyan-400" />
+                <span>JARVIS CORE ECOSYSTEM</span>
+              </div>
+              <span className="text-[10px] text-cyan-500 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/40">Second Brain</span>
             </div>
 
             <div>
               <label className="text-slate-400 block text-[10px] mb-1">
-                JARVIS_CORE_API_URL (External Agent / Cloud / LAN IP)
+                JARVIS_CORE_API_URL (Cloudflare Tunnel, Tailscale, or LAN)
               </label>
               <input
                 type="url"
                 value={jarvisCoreUrl}
                 onChange={e => setJarvisCoreUrl(e.target.value)}
-                placeholder="http://192.168.1.100:8000/api/v1/jarvis"
+                placeholder="https://jarvis.savestate.co.za"
                 className={inputCls}
               />
             </div>
 
             <div>
               <label className="text-slate-400 block text-[10px] mb-1">
-                SECOND_BRAIN_AUTH_TOKEN (Optional Bearer Token / API Key)
+                JARVIS_API_KEY (Integration Key or Master Key)
               </label>
               <div className="relative">
                 <input
                   type="password"
                   value={secondBrainAuthToken}
                   onChange={e => setSecondBrainAuthToken(e.target.value)}
-                  placeholder="Bearer token or secret key..."
+                  placeholder="jb_live_sk_... or master key"
                   className={inputCls}
                 />
                 <Key className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
               </div>
             </div>
-          </div>
 
-          {/* Section 2: Home NAS Webhook & Camera Stream */}
-          <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
-            <div className="flex items-center gap-2 text-amber-300 font-bold uppercase text-[11px]">
-              <Database className="w-4 h-4 text-amber-400" />
-              <span>HOME NAS WEBHOOK (OPTIONAL)</span>
-            </div>
-
-            <div>
-              <label className="text-slate-400 block text-[10px] mb-1">
-                NAS_WEBHOOK_URL (Local IP or Tailscale Mesh IP, e.g. http://100.x.y.z:5050/webhook)
-              </label>
-              <input
-                type="url"
-                value={webhookUrl}
-                onChange={e => setWebhookUrl(e.target.value)}
-                placeholder="http://192.168.1.150:8080/jarvis-webhook"
-                className={inputCls}
-              />
-            </div>
-
-          </div>
-
-          {/* Handshake Ping Action */}
-          <div className="space-y-2">
             <button
               onClick={handleTestHandshake}
               disabled={isPinging}
-              className="w-full min-h-[44px] px-4 rounded-xl bg-slate-800 border border-cyan-500/40 disabled:opacity-50 text-cyan-200 font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition"
+              className="w-full min-h-[40px] px-3 rounded-lg bg-cyan-950/40 border border-cyan-500/50 hover:bg-cyan-900/40 text-cyan-200 font-bold text-xs uppercase flex items-center justify-center gap-2 transition"
             >
-              <Activity className="w-4 h-4" />
-              <span>{isPinging ? 'TESTING...' : 'TEST JARVIS CORE CONNECTION'}</span>
+              <Activity className="w-3.5 h-3.5" />
+              <span>{isPinging ? 'TESTING JARVIS...' : 'TEST JARVIS HANDSHAKE'}</span>
             </button>
 
             {pingResult && (
               <div
-                className={`p-3 rounded-xl border flex items-center gap-2 ${
+                className={`p-2.5 rounded-lg border flex items-center gap-2 ${
                   pingResult.success
                     ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300'
                     : 'bg-rose-950/40 border-rose-500/50 text-rose-300'
@@ -342,6 +377,93 @@ server.serve_forever()`;
                 <span>{pingResult.message}</span>
               </div>
             )}
+          </div>
+
+          {/* Section 2: Agent Builder Bridge */}
+          <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-purple-900/40">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-purple-300 font-bold uppercase text-[11px]">
+                <Bot className="w-4 h-4 text-purple-400" />
+                <span>AGENT BUILDER BRIDGE</span>
+              </div>
+              <span className="text-[10px] text-purple-400 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">Autonomous Builder</span>
+            </div>
+
+            <div>
+              <label className="text-slate-400 block text-[10px] mb-1">
+                AGENT_BUILDER_BRIDGE_URL (Portfolio Bridge or PC Agent Bridge)
+              </label>
+              <input
+                type="url"
+                value={agentBuilderUrl}
+                onChange={e => setAgentBuilderUrl(e.target.value)}
+                placeholder="https://portfolio.arpcloudsolutions.co.za/api/agent-builder/bridge"
+                className={inputCls}
+              />
+            </div>
+
+            <div>
+              <label className="text-slate-400 block text-[10px] mb-1">
+                AGENT_BUILDER_KEY (Authorization Key)
+              </label>
+              <div className="relative">
+                <input
+                  type="password"
+                  value={agentBuilderApiKey}
+                  onChange={e => setAgentBuilderApiKey(e.target.value)}
+                  placeholder="jrv_... key"
+                  className={inputCls}
+                />
+                <Key className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+
+            <button
+              onClick={handleTestAgentBuilder}
+              disabled={isAgentBuilderPinging}
+              className="w-full min-h-[40px] px-3 rounded-lg bg-purple-950/40 border border-purple-500/50 hover:bg-purple-900/40 text-purple-200 font-bold text-xs uppercase flex items-center justify-center gap-2 transition"
+            >
+              <Bot className="w-3.5 h-3.5" />
+              <span>{isAgentBuilderPinging ? 'TESTING AGENT BUILDER...' : 'TEST AGENT BUILDER BRIDGE'}</span>
+            </button>
+
+            {agentBuilderPingResult && (
+              <div
+                className={`p-2.5 rounded-lg border flex items-center gap-2 ${
+                  agentBuilderPingResult.success
+                    ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300'
+                    : 'bg-rose-950/40 border-rose-500/50 text-rose-300'
+                }`}
+              >
+                {agentBuilderPingResult.success ? (
+                  <CheckCircle className="w-4 h-4 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                )}
+                <span>{agentBuilderPingResult.message}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Section 3: Home NAS Webhook */}
+          <div className="space-y-3 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
+            <div className="flex items-center gap-2 text-amber-300 font-bold uppercase text-[11px]">
+              <Database className="w-4 h-4 text-amber-400" />
+              <span>HOME NAS WEBHOOK (OPTIONAL)</span>
+            </div>
+
+            <div>
+              <label className="text-slate-400 block text-[10px] mb-1">
+                NAS_WEBHOOK_URL (Local IP or Tailscale Mesh IP)
+              </label>
+              <input
+                type="url"
+                value={webhookUrl}
+                onChange={e => setWebhookUrl(e.target.value)}
+                placeholder="http://192.168.1.150:8080/jarvis-webhook"
+                className={inputCls}
+              />
+            </div>
           </div>
 
           {/* Ready-to-Run Server Scripts */}
@@ -401,7 +523,7 @@ server.serve_forever()`;
             }}
             className="min-h-[44px] px-5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-mono font-bold text-xs uppercase"
           >
-            Save
+            Save Settings
           </button>
         </div>
       </div>

@@ -10,6 +10,8 @@ const MAX_HISTORY = 25;
 export interface UserSettings {
   jarvisCoreApiUrl: string;
   secondBrainAuthToken: string;
+  agentBuilderUrl: string;
+  agentBuilderApiKey: string;
   nasWebhookUrl: string;
   externalCameraStreamUrl: string;
   ipCameraUrl: string; // legacy alias
@@ -37,8 +39,10 @@ const DEFAULT_STATS: BenchStats = {
 };
 
 const DEFAULT_SETTINGS: UserSettings = {
-  jarvisCoreApiUrl: '',
-  secondBrainAuthToken: '',
+  jarvisCoreApiUrl: 'https://jarvis.savestate.co.za',
+  secondBrainAuthToken: 'jb_live_sk_4a99dd8421af3f23637a16b9f52b7c0c75ed44b5ab14f20e',
+  agentBuilderUrl: 'https://portfolio.arpcloudsolutions.co.za/api/agent-builder/bridge',
+  agentBuilderApiKey: 'jrv_12131e8a71fb40bc52af8e9bf16f866505e74231fe89f120',
   nasWebhookUrl: '',
   externalCameraStreamUrl: '',
   ipCameraUrl: '',
@@ -129,8 +133,19 @@ export function getStoredSettings(): UserSettings {
   const stored =
     readJSON<Partial<UserSettings>>(STORAGE_KEY_SETTINGS) || readJSON<Partial<UserSettings>>('jarvis_bench_settings_v1') || {};
   const merged = { ...DEFAULT_SETTINGS, ...stored };
-  // Older builds pre-filled placeholder LAN addresses that don't exist on most networks.
-  if (LEGACY_DEFAULT_URLS.has(merged.jarvisCoreApiUrl)) merged.jarvisCoreApiUrl = '';
+  // If stored values are blank or old legacy local defaults, hydrate with live ecosystem endpoints
+  if (!merged.jarvisCoreApiUrl || LEGACY_DEFAULT_URLS.has(merged.jarvisCoreApiUrl)) {
+    merged.jarvisCoreApiUrl = DEFAULT_SETTINGS.jarvisCoreApiUrl;
+  }
+  if (!merged.secondBrainAuthToken) {
+    merged.secondBrainAuthToken = DEFAULT_SETTINGS.secondBrainAuthToken;
+  }
+  if (!merged.agentBuilderUrl) {
+    merged.agentBuilderUrl = DEFAULT_SETTINGS.agentBuilderUrl;
+  }
+  if (!merged.agentBuilderApiKey) {
+    merged.agentBuilderApiKey = DEFAULT_SETTINGS.agentBuilderApiKey;
+  }
   if (LEGACY_DEFAULT_URLS.has(merged.nasWebhookUrl)) merged.nasWebhookUrl = '';
   return merged;
 }

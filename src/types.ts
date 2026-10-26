@@ -93,6 +93,8 @@ export interface EcosystemStatus {
   latencyMs: number | null;
   lastPing: string | null;
   message?: string;
+  agentBuilderConnected?: boolean;
+  agentBuilderLatencyMs?: number | null;
 }
 
 export interface ScanHistoryEntry {

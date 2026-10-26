@@ -1,5 +1,5 @@
 import React from 'react';
-import { Volume2, VolumeX, Mic, MicOff, ShieldAlert, Cpu, Settings, History, Activity } from 'lucide-react';
+import { Volume2, VolumeX, Mic, MicOff, ShieldAlert, Cpu, Settings, History, Activity, Bot } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 import { BenchStats, EcosystemStatus } from '../types';
 
@@ -47,7 +47,13 @@ export const HeaderTelemetry: React.FC<HeaderTelemetryProps> = ({
               {ecosystemStatus?.connected && (
                 <span className="text-cyan-400 flex items-center gap-1">
                   <Activity className="w-2.5 h-2.5" />
-                  BRIDGE {ecosystemStatus.latencyMs ? `${ecosystemStatus.latencyMs}ms` : ''}
+                  JARVIS {ecosystemStatus.latencyMs ? `${ecosystemStatus.latencyMs}ms` : ''}
+                </span>
+              )}
+              {ecosystemStatus?.agentBuilderConnected && (
+                <span className="text-purple-400 flex items-center gap-1">
+                  <Bot className="w-2.5 h-2.5" />
+                  BUILDER {ecosystemStatus.agentBuilderLatencyMs ? `${ecosystemStatus.agentBuilderLatencyMs}ms` : ''}
                 </span>
               )}
             </div>

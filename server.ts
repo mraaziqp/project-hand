@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { AnalyzeError, analyzeImage, isAuthorized } from './lib/analyze.js';
-import { relayInventorySync, relayNas, relayTelemetry, RelayResult } from './lib/relays.js';
+import { relayInventorySync, relayNas, relayTelemetry, relayAgentBuilder, RelayResult } from './lib/relays.js';
 import { applyCors } from './lib/http.js';
 
 dotenv.config({ path: ['.env.local', '.env'], quiet: true });
@@ -50,6 +50,7 @@ const sendRelay = (fn: (body: unknown) => Promise<RelayResult>) => async (req: e
 
 app.post('/api/jarvis/telemetry', sendRelay(relayTelemetry));
 app.post('/api/jarvis/inventory-sync', sendRelay(relayInventorySync));
+app.post('/api/agent-builder/relay', sendRelay(relayAgentBuilder));
 app.post('/api/nas/proxy', sendRelay(relayNas));
 app.post('/api/nas-sync', sendRelay(relayNas)); // backward-compatibility
 

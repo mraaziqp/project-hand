@@ -128,6 +128,49 @@ export default function App() {
     };
   }, []);
 
+  // Periodic ecosystem heartbeat with Jarvis and Agent Builder bridge
+  useEffect(() => {
+    let cancelled = false;
+    const checkEcosystem = async () => {
+      try {
+        const jarvisPromise = postJSON<{ success: boolean; latencyMs?: number }>('/api/jarvis/telemetry', {
+          jarvisCoreUrl: settings.jarvisCoreApiUrl,
+          authToken: settings.secondBrainAuthToken,
+          state: { event: 'BENCH_OS_HEARTBEAT', timestamp: new Date().toISOString() },
+        }).catch(() => null);
+
+        const builderPromise = postJSON<{ success: boolean; latencyMs?: number }>('/api/agent-builder/relay', {
+          agentBuilderUrl: settings.agentBuilderUrl,
+          apiKey: settings.agentBuilderApiKey,
+          title: 'BENCH-OS Heartbeat',
+          message: 'BENCH-OS workbench live session check-in',
+          sender: 'BENCH-OS',
+          eventType: 'event',
+        }).catch(() => null);
+
+        const [jarvisRes, builderRes] = await Promise.all([jarvisPromise, builderPromise]);
+        if (!cancelled) {
+          setEcosystemStatus({
+            connected: !!jarvisRes?.success,
+            latencyMs: jarvisRes?.latencyMs ?? null,
+            lastPing: new Date().toLocaleTimeString(),
+            agentBuilderConnected: !!builderRes?.success,
+            agentBuilderLatencyMs: builderRes?.latencyMs ?? null,
+          });
+        }
+      } catch {
+        /* Fail open: standalone operations never interrupted */
+      }
+    };
+
+    checkEcosystem();
+    const interval = setInterval(checkEcosystem, 5 * 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [settings.jarvisCoreApiUrl, settings.secondBrainAuthToken, settings.agentBuilderUrl, settings.agentBuilderApiKey]);
+
   // --- Analysis ---
   const runAnalysis = useCallback(
     async (image: LoadedImage, opts: ScanOptions) => {
